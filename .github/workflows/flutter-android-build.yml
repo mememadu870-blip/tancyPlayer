@@ -29,8 +29,25 @@ jobs:
         working-directory: flutter_player
         run: |
           flutter create --platforms=android --org com.tancy.player .
-          git checkout -- pubspec.yaml lib/main.dart
+          git checkout -- pubspec.yaml lib
           flutter pub get
+
+      - name: Add Android Permissions
+        working-directory: flutter_player
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/src/main/AndroidManifest.xml")
+          s = p.read_text(encoding="utf-8")
+          perms = [
+              '<uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>',
+              '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>',
+          ]
+          for perm in perms:
+              if perm not in s:
+                  s = s.replace("<application", f"{perm}\n\n    <application", 1)
+          p.write_text(s, encoding="utf-8")
+          PY
 
       - name: Build Release APK
         working-directory: flutter_player

@@ -11,6 +11,10 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
   google_fonts: ^6.2.1
+  just_audio: ^0.10.4
+  on_audio_query: ^2.9.0
+  shared_preferences: ^2.3.2
+  crypto: ^3.0.6
 
 dev_dependencies:
   flutter_test:
