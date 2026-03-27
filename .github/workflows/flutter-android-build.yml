@@ -49,6 +49,23 @@ jobs:
           p.write_text(s, encoding="utf-8")
           PY
 
+      - name: Patch on_audio_query_android Namespace
+        working-directory: flutter_player
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path.home() / ".pub-cache" / "hosted" / "pub.dev" / "on_audio_query_android-1.1.0" / "android" / "build.gradle"
+          if p.exists():
+              s = p.read_text(encoding="utf-8")
+              if 'namespace "com.lucasjosino.on_audio_query"' not in s:
+                  s = s.replace(
+                      "android {",
+                      'android {\n    namespace "com.lucasjosino.on_audio_query"',
+                      1,
+                  )
+                  p.write_text(s, encoding="utf-8")
+          PY
+
       - name: Build Release APK
         working-directory: flutter_player
         run: flutter build apk --release
