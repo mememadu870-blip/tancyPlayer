@@ -1,0 +1,43 @@
+name: Flutter Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "flutter_player/**"
+      - ".github/workflows/flutter-android-build.yml"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Prepare Flutter Android Project
+        working-directory: flutter_player
+        run: |
+          flutter create --platforms=android --org com.tancy.player .
+          git checkout -- pubspec.yaml lib/main.dart
+          flutter pub get
+
+      - name: Build Release APK
+        working-directory: flutter_player
+        run: flutter build apk --release
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tancy-player-flutter-release-apk
+          path: flutter_player/build/app/outputs/flutter-apk/app-release.apk

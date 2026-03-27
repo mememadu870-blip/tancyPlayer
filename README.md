@@ -17,6 +17,22 @@
 - 播放进度展示与拖动跳转（Seek）
 - 耳机/蓝牙媒体按键入口（`MEDIA_BUTTON`）
 
+## Flutter 高颜值 UI 版
+
+- Flutter 代码目录：`flutter_player/`
+- 入口文件：`flutter_player/lib/main.dart`
+- 使用了更现代的视觉风格（渐变、玻璃态卡片、播放底栏、队列卡片）
+
+## GitHub Actions 自动构建 APK
+
+- 工作流文件：`.github/workflows/flutter-android-build.yml`
+- 触发方式：
+  - push `flutter_player/**` 自动触发
+  - 在 GitHub Actions 页面手动触发 `workflow_dispatch`
+- 产物：
+  - Artifact 名称：`tancy-player-flutter-release-apk`
+  - 文件：`app-release.apk`
+
 ## 技术栈
 
 - Kotlin + Jetpack Compose
