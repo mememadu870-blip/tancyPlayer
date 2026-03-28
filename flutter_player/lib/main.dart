@@ -13,21 +13,42 @@ void main() {
   runApp(const TancyApp());
 }
 
+class TancyColors {
+  static const background = Color(0xFF0E0E0E);
+  static const surfaceLow = Color(0xFF131313);
+  static const surface = Color(0xFF1A1A1A);
+  static const surfaceHigh = Color(0xFF262626);
+  static const primary = Color(0xFF81ECFF);
+  static const primary2 = Color(0xFF00E3FD);
+  static const secondary = Color(0xFFFF734A);
+  static const text = Colors.white;
+  static const textDim = Color(0xFFADAAAA);
+  static const outline = Color(0xFF484847);
+}
+
 class TancyApp extends StatelessWidget {
   const TancyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final base = ThemeData.dark(useMaterial3: true);
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Tancy Player',
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        textTheme: GoogleFonts.outfitTextTheme(),
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF38D9B7)),
+      title: 'tancyPlayer',
+      theme: base.copyWith(
+        scaffoldBackgroundColor: TancyColors.background,
+        textTheme: GoogleFonts.interTextTheme(base.textTheme).apply(
+          bodyColor: TancyColors.text,
+          displayColor: TancyColors.text,
+        ),
+        colorScheme: const ColorScheme.dark(
+          primary: TancyColors.primary,
+          secondary: TancyColors.secondary,
+          surface: TancyColors.surface,
+          onSurface: TancyColors.text,
+        ),
       ),
-      home: const PlayerPage(),
+      home: const TancyHomePage(),
     );
   }
 }
@@ -42,6 +63,7 @@ class DuplicateGroup {
 class PlayerStore extends ChangeNotifier {
   static const _kFavorites = 'favorites';
   static const _kPlaylists = 'playlists';
+  static const _kNotifControl = 'notif_control';
 
   final OnAudioQuery _audioQuery = OnAudioQuery();
   final AudioPlayer _player = AudioPlayer();
@@ -55,6 +77,7 @@ class PlayerStore extends ChangeNotifier {
   bool loading = false;
   bool duplicateScanning = false;
   int sleepTimerSeconds = 0;
+  bool showNotificationControl = true;
   LoopMode loopMode = LoopMode.all;
 
   Duration position = Duration.zero;
@@ -65,6 +88,16 @@ class PlayerStore extends ChangeNotifier {
   StreamSubscription<Duration?>? _durSub;
   StreamSubscription<int?>? _indexSub;
   SharedPreferences? _prefs;
+
+  SongModel? get currentSong {
+    if (currentSongId == null) return null;
+    for (final s in songs) {
+      if (s.id == currentSongId) return s;
+    }
+    return null;
+  }
+
+  bool get isPlaying => _player.playing;
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -81,14 +114,14 @@ class PlayerStore extends ChangeNotifier {
         return MapEntry(k, ids);
       });
     }
+    showNotificationControl = _prefs?.getBool(_kNotifControl) ?? true;
 
     await _preparePlayerStreams();
     await scanSongs();
   }
 
   Future<void> _preparePlayerStreams() async {
-    _player.setLoopMode(loopMode);
-
+    await _player.setLoopMode(loopMode);
     _posSub = _player.positionStream.listen((p) {
       position = p;
       notifyListeners();
@@ -130,10 +163,8 @@ class PlayerStore extends ChangeNotifier {
         .toList(growable: false);
 
     if (sources.isNotEmpty) {
-      await _player.setAudioSource(
-        ConcatenatingAudioSource(children: sources),
-      );
-      currentSongId = songs.first.id;
+      await _player.setAudioSource(ConcatenatingAudioSource(children: sources));
+      currentSongId ??= songs.first.id;
     } else {
       await _player.stop();
       currentSongId = null;
@@ -172,8 +203,7 @@ class PlayerStore extends ChangeNotifier {
   }
 
   Future<void> seek(double v) async {
-    final target = Duration(milliseconds: v.toInt());
-    await _player.seek(target);
+    await _player.seek(Duration(milliseconds: v.toInt()));
   }
 
   Future<void> setRepeatMode(LoopMode mode) async {
@@ -207,6 +237,12 @@ class PlayerStore extends ChangeNotifier {
       await _persistPlaylists();
       notifyListeners();
     }
+  }
+
+  Future<void> setNotificationControl(bool enabled) async {
+    showNotificationControl = enabled;
+    await _prefs?.setBool(_kNotifControl, enabled);
+    notifyListeners();
   }
 
   Future<void> _persistPlaylists() async {
@@ -264,8 +300,6 @@ class PlayerStore extends ChangeNotifier {
     return digest.toString();
   }
 
-  bool get isPlaying => _player.playing;
-
   @override
   void dispose() {
     _sleepTimer?.cancel();
@@ -277,16 +311,17 @@ class PlayerStore extends ChangeNotifier {
   }
 }
 
-class PlayerPage extends StatefulWidget {
-  const PlayerPage({super.key});
+class TancyHomePage extends StatefulWidget {
+  const TancyHomePage({super.key});
 
   @override
-  State<PlayerPage> createState() => _PlayerPageState();
+  State<TancyHomePage> createState() => _TancyHomePageState();
 }
 
-class _PlayerPageState extends State<PlayerPage> {
-  final store = PlayerStore();
-  String selectedPlaylist = '';
+class _TancyHomePageState extends State<TancyHomePage> {
+  final PlayerStore store = PlayerStore();
+  int tab = 2;
+  String search = '';
 
   @override
   void initState() {
@@ -306,204 +341,544 @@ class _PlayerPageState extends State<PlayerPage> {
 
   @override
   Widget build(BuildContext context) {
-    SongModel? current;
-    if (store.songs.isNotEmpty) {
-      current = store.songs.first;
-      for (final s in store.songs) {
-        if (s.id == store.currentSongId) {
-          current = s;
-          break;
-        }
-      }
-    }
-
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF090E18), Color(0xFF101D30), Color(0xFF102328)],
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _header(),
-              if (store.loading) const LinearProgressIndicator(minHeight: 2),
-              _nowPlaying(current),
-              _toolbar(),
-              Expanded(child: _songList()),
-            ],
-          ),
-        ),
-      ),
-      bottomNavigationBar: _playerBar(current),
-    );
-  }
-
-  Widget _header() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      child: Row(
+      body: Stack(
         children: [
-          Text('Tancy Player', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
-          const Spacer(),
-          _chip('本地 ${store.songs.length} 首'),
-        ],
-      ),
-    );
-  }
-
-  Widget _nowPlaying(SongModel? song) {
-    final title = (song?.title.isNotEmpty == true) ? song!.title : '未选择歌曲';
-    final artist = (song?.artist?.isNotEmpty == true) ? song!.artist! : 'Unknown Artist';
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        color: const Color(0x1AFFFFFF),
-        border: Border.all(color: const Color(0x30FFFFFF)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Now Playing', style: TextStyle(color: Colors.white.withValues(alpha: 0.72))),
-          const SizedBox(height: 4),
-          Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis),
-          Text(artist, style: TextStyle(color: Colors.white.withValues(alpha: 0.7))),
-          const SizedBox(height: 8),
-          Slider(
-            value: store.position.inMilliseconds
-                .toDouble()
-                .clamp(0.0, store.duration.inMilliseconds.toDouble().clamp(1.0, (1 << 30).toDouble()))
-                .toDouble(),
-            min: 0,
-            max: store.duration.inMilliseconds.toDouble().clamp(1.0, (1 << 30).toDouble()).toDouble(),
-            onChanged: (v) => store.seek(v),
-          ),
-          Row(
-            children: [
-              Text(_fmt(store.position), style: TextStyle(color: Colors.white.withValues(alpha: 0.7))),
-              const Spacer(),
-              Text(_fmt(store.duration), style: TextStyle(color: Colors.white.withValues(alpha: 0.7))),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _toolbar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          FilledButton.tonal(onPressed: store.scanSongs, child: const Text('扫描音乐')),
-          FilledButton.tonal(
-            onPressed: () => _createPlaylistDialog(),
-            child: const Text('创建歌单'),
-          ),
-          FilledButton.tonal(
-            onPressed: () => _chooseSleepTimer(),
-            child: Text(store.sleepTimerSeconds > 0 ? '定时 ${store.sleepTimerSeconds}s' : '定时停止'),
-          ),
-          FilledButton.tonal(
-            onPressed: store.duplicateScanning ? null : () => _runDuplicateScan(),
-            child: Text(store.duplicateScanning ? '查重中...' : 'Hash查重'),
-          ),
-          DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: selectedPlaylist.isEmpty ? null : selectedPlaylist,
-              hint: const Text('选中歌单'),
-              dropdownColor: const Color(0xFF14253A),
-              items: store.playlists.keys
-                  .map((p) => DropdownMenuItem(value: p, child: Text(p)))
-                  .toList(),
-              onChanged: (v) => setState(() => selectedPlaylist = v ?? ''),
-            ),
-          ),
-          SegmentedButton<LoopMode>(
-            segments: const [
-              ButtonSegment(value: LoopMode.off, label: Text('不循环')),
-              ButtonSegment(value: LoopMode.one, label: Text('单曲')),
-              ButtonSegment(value: LoopMode.all, label: Text('列表')),
-            ],
-            selected: {store.loopMode},
-            onSelectionChanged: (v) => store.setRepeatMode(v.first),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _songList() {
-    return ListView.builder(
-      itemCount: store.songs.length,
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 110),
-      itemBuilder: (_, i) {
-        final s = store.songs[i];
-        final active = s.id == store.currentSongId;
-        final liked = store.favorites.contains(s.id);
-        return Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            color: active ? const Color(0x2238D9B7) : const Color(0x13213244),
-            border: Border.all(color: active ? const Color(0x6638D9B7) : Colors.white12),
-          ),
-          child: ListTile(
-            onTap: () => store.playById(s.id),
-            title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text(
-              (s.artist?.isNotEmpty == true ? s.artist! : 'Unknown Artist'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 4,
+          const Positioned(top: 50, left: -100, right: -100, child: _AmbientGlow()),
+          SafeArea(
+            child: Column(
               children: [
-                Text(_fmt(Duration(milliseconds: s.duration ?? 0))),
-                IconButton(
-                  onPressed: () => store.toggleFavorite(s.id),
-                  icon: Icon(liked ? Icons.favorite : Icons.favorite_border, color: liked ? Colors.pinkAccent : null),
-                ),
-                IconButton(
-                  onPressed: selectedPlaylist.isEmpty
-                      ? null
-                      : () => store.addToPlaylist(selectedPlaylist, s.id),
-                  icon: const Icon(Icons.playlist_add_rounded),
-                ),
+                _topBar(),
+                if (store.loading)
+                  const LinearProgressIndicator(
+                    minHeight: 2,
+                    color: TancyColors.primary,
+                    backgroundColor: Colors.transparent,
+                  ),
+                Expanded(child: _bodyForTab()),
               ],
             ),
           ),
-        );
-      },
+          if (tab != 2) _miniNowPlaying(),
+        ],
+      ),
+      bottomNavigationBar: _bottomNav(),
+      backgroundColor: TancyColors.background,
     );
   }
 
-  Widget _playerBar(SongModel? song) {
-    final title = (song?.title.isNotEmpty == true) ? song!.title : '未选择歌曲';
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 20),
-      decoration: const BoxDecoration(color: Color(0xFF0E1726), border: Border(top: BorderSide(color: Colors.white12))),
+  Widget _topBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 8),
       child: Row(
         children: [
-          Expanded(
-            child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const Icon(Icons.graphic_eq_rounded, color: TancyColors.primary),
+          const SizedBox(width: 8),
+          Text(
+            'tancyPlayer',
+            style: GoogleFonts.spaceGrotesk(
+              color: TancyColors.primary,
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+              fontStyle: FontStyle.italic,
+            ),
           ),
-          IconButton(onPressed: store.previous, icon: const Icon(Icons.skip_previous_rounded)),
-          FilledButton.tonal(
-            onPressed: store.togglePlayPause,
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF38D9B7), foregroundColor: Colors.black),
-            child: Icon(store.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
+          const Spacer(),
+          IconButton(
+            onPressed: () {},
+            icon: const Icon(Icons.search_rounded, color: TancyColors.textDim),
           ),
-          IconButton(onPressed: store.next, icon: const Icon(Icons.skip_next_rounded)),
         ],
+      ),
+    );
+  }
+
+  Widget _bodyForTab() {
+    switch (tab) {
+      case 0:
+        return _libraryPage();
+      case 1:
+        return _playlistsPage();
+      case 2:
+        return _playerPage();
+      default:
+        return _settingsPage();
+    }
+  }
+
+  Widget _libraryPage() {
+    final filtered = store.songs.where((s) {
+      if (search.trim().isEmpty) return true;
+      final key = search.toLowerCase();
+      return s.title.toLowerCase().contains(key) ||
+          (s.artist ?? '').toLowerCase().contains(key) ||
+          (s.album ?? '').toLowerCase().contains(key);
+    }).toList(growable: false);
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 180),
+      children: [
+        TextField(
+          onChanged: (v) => setState(() => search = v),
+          decoration: InputDecoration(
+            hintText: 'Search your library...',
+            hintStyle: const TextStyle(color: TancyColors.textDim),
+            filled: true,
+            fillColor: TancyColors.surfaceHigh,
+            prefixIcon: const Icon(Icons.search_rounded, color: TancyColors.textDim),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _glassCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text('System Sync', style: GoogleFonts.spaceGrotesk(color: TancyColors.primary, fontWeight: FontWeight.w700)),
+                  const Spacer(),
+                  Text('${store.songs.length} tracks', style: const TextStyle(color: TancyColors.textDim)),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const Text('Scanning local storage...', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 10),
+              LinearProgressIndicator(
+                value: store.loading ? null : 1,
+                minHeight: 6,
+                color: TancyColors.primary,
+                backgroundColor: TancyColors.outline.withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(99),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                children: [
+                  _chipBtn('Rescan', Icons.refresh_rounded, store.scanSongs),
+                  _chipBtn('Hash查重', Icons.fingerprint_rounded, _runDuplicateScan),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        Text('Songs', style: GoogleFonts.spaceGrotesk(fontSize: 30, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
+        for (final s in filtered) _songTile(s),
+      ],
+    );
+  }
+
+  Widget _playlistsPage() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 180),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(28),
+            gradient: const LinearGradient(colors: [Color(0x45FF734A), Color(0x1000E3FD)]),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(children: [Icon(Icons.favorite_rounded, color: TancyColors.secondary), SizedBox(width: 8), Text('Curated for you', style: TextStyle(color: TancyColors.textDim))]),
+              const SizedBox(height: 8),
+              Text('Favorites', style: GoogleFonts.spaceGrotesk(fontSize: 44, fontWeight: FontWeight.w700, fontStyle: FontStyle.italic)),
+              Text('${store.favorites.length} Tracks', style: const TextStyle(color: TancyColors.textDim)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 22),
+        Row(
+          children: [
+            Text('Your Playlists', style: GoogleFonts.spaceGrotesk(fontSize: 30, fontWeight: FontWeight.w700)),
+            const Spacer(),
+            FilledButton.icon(
+              onPressed: _createPlaylistDialog,
+              style: FilledButton.styleFrom(backgroundColor: TancyColors.surfaceHigh),
+              icon: const Icon(Icons.add_rounded, color: TancyColors.primary),
+              label: const Text('Create New'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (store.playlists.isEmpty) _glassCard(child: const Text('还没有歌单，点击 Create New 创建。', style: TextStyle(color: TancyColors.textDim))),
+        ...store.playlists.entries.map((e) => Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(color: TancyColors.surfaceLow, borderRadius: BorderRadius.circular(18)),
+              child: Row(
+                children: [
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      gradient: const LinearGradient(colors: [Color(0xFF1B2836), Color(0xFF213E57)]),
+                    ),
+                    child: const Icon(Icons.playlist_play_rounded, color: TancyColors.primary),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(e.key, style: GoogleFonts.spaceGrotesk(fontSize: 21, fontWeight: FontWeight.w700))),
+                  Text('${e.value.length} songs', style: const TextStyle(color: TancyColors.textDim)),
+                ],
+              ),
+            )),
+      ],
+    );
+  }
+
+  Widget _playerPage() {
+    final song = store.currentSong;
+    final title = (song?.title.isNotEmpty == true) ? song!.title : '未选择歌曲';
+    final artist = (song?.artist?.isNotEmpty == true) ? song!.artist! : 'Unknown Artist';
+    final max = store.duration.inMilliseconds.toDouble().clamp(1.0, (1 << 30).toDouble()).toDouble();
+    final value = store.position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
+      children: [
+        Container(
+          height: 360,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(40),
+            gradient: const LinearGradient(colors: [Color(0xFF203245), Color(0xFF111B29), Color(0xFF0E3842)]),
+          ),
+          child: Stack(
+            children: [
+              const Center(child: Icon(Icons.album_rounded, size: 110, color: Colors.white70)),
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 16,
+                child: _glassCard(
+                  child: Row(
+                    children: [
+                      const Icon(Icons.equalizer_rounded, color: TancyColors.primary),
+                      const SizedBox(width: 8),
+                      const Expanded(child: Text('Currently Playing', style: TextStyle(color: TancyColors.textDim))),
+                      Text(store.isPlaying ? 'LIVE' : 'PAUSED', style: const TextStyle(color: TancyColors.primary)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.spaceGrotesk(fontSize: 34, fontWeight: FontWeight.w700)),
+                  Text(artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: TancyColors.textDim, fontSize: 18)),
+                ],
+              ),
+            ),
+            IconButton(
+              onPressed: song == null ? null : () => store.toggleFavorite(song.id),
+              icon: Icon(
+                song != null && store.favorites.contains(song.id) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                color: TancyColors.secondary,
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: value,
+          min: 0,
+          max: max,
+          onChanged: store.seek,
+          activeColor: TancyColors.primary,
+          inactiveColor: TancyColors.outline.withValues(alpha: 0.3),
+        ),
+        Row(
+          children: [
+            Text(_fmt(store.position), style: const TextStyle(color: TancyColors.textDim)),
+            const Spacer(),
+            Text(_fmt(store.duration), style: const TextStyle(color: TancyColors.textDim)),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            IconButton(
+              onPressed: () => store.setRepeatMode(
+                store.loopMode == LoopMode.one
+                    ? LoopMode.off
+                    : store.loopMode == LoopMode.off
+                        ? LoopMode.all
+                        : LoopMode.one,
+              ),
+              icon: Icon(store.loopMode == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded, color: store.loopMode == LoopMode.off ? TancyColors.textDim : TancyColors.primary),
+            ),
+            IconButton(onPressed: store.previous, icon: const Icon(Icons.skip_previous_rounded, size: 44)),
+            GestureDetector(
+              onTap: store.togglePlayPause,
+              child: Container(
+                width: 86,
+                height: 86,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(colors: [TancyColors.primary, TancyColors.primary2]),
+                ),
+                child: Icon(store.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, color: const Color(0xFF003840), size: 44),
+              ),
+            ),
+            IconButton(onPressed: store.next, icon: const Icon(Icons.skip_next_rounded, size: 44)),
+            IconButton(onPressed: _runDuplicateScan, icon: const Icon(Icons.more_vert_rounded, color: TancyColors.textDim)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _settingsPage() {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
+      children: [
+        Text('Settings', style: GoogleFonts.spaceGrotesk(fontSize: 52, fontWeight: FontWeight.w700)),
+        const Text('Fine-tune your auditory environment.', style: TextStyle(color: TancyColors.textDim)),
+        const SizedBox(height: 20),
+        _glassCard(
+          child: Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _timerBtn('15m', 15),
+              _timerBtn('30m', 30),
+              _timerBtn('60m', 60),
+              _timerBtn('Cancel', 0, danger: true),
+            ],
+          ),
+        ),
+        if (store.sleepTimerSeconds > 0) ...[
+          const SizedBox(height: 8),
+          Text('剩余 ${store.sleepTimerSeconds}s', style: const TextStyle(color: TancyColors.primary)),
+        ],
+        const SizedBox(height: 16),
+        SwitchListTile(
+          value: store.showNotificationControl,
+          activeColor: TancyColors.primary2,
+          onChanged: store.setNotificationControl,
+          title: const Text('Show Notification Control'),
+          subtitle: const Text('Keep playback actions in status bar', style: TextStyle(color: TancyColors.textDim)),
+        ),
+        ListTile(
+          onTap: store.scanSongs,
+          leading: const Icon(Icons.refresh_rounded, color: TancyColors.primary),
+          title: const Text('Rescan Storage'),
+          subtitle: const Text('Force indexer to look for new audio files', style: TextStyle(color: TancyColors.textDim)),
+        ),
+        ListTile(
+          onTap: _runDuplicateScan,
+          leading: const Icon(Icons.fingerprint_rounded, color: TancyColors.primary),
+          title: const Text('Duplicate Detection (SHA-256)'),
+          subtitle: const Text('Find repeated audio files by hash', style: TextStyle(color: TancyColors.textDim)),
+        ),
+      ],
+    );
+  }
+
+  Widget _songTile(SongModel s) {
+    final liked = store.favorites.contains(s.id);
+    final active = store.currentSongId == s.id;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: active ? const Color(0x2238D9B7) : TancyColors.surfaceLow,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 54,
+            height: 54,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(colors: [Color(0xFF192A3D), Color(0xFF0E5B66)]),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.music_note_rounded, color: Colors.white70),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: InkWell(
+              onTap: () => store.playById(s.id),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.spaceGrotesk(fontSize: 17, fontWeight: FontWeight.w700)),
+                  Text(s.artist?.isNotEmpty == true ? s.artist! : 'Unknown Artist', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: TancyColors.textDim)),
+                ],
+              ),
+            ),
+          ),
+          Text(_fmt(Duration(milliseconds: s.duration ?? 0)), style: const TextStyle(color: TancyColors.textDim)),
+          IconButton(
+            onPressed: () => store.toggleFavorite(s.id),
+            icon: Icon(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: liked ? TancyColors.secondary : TancyColors.textDim),
+          ),
+          IconButton(
+            onPressed: () => _addToPlaylistSheet(s.id),
+            icon: const Icon(Icons.playlist_add_rounded, color: TancyColors.primary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _miniNowPlaying() {
+    final song = store.currentSong;
+    if (song == null) return const SizedBox.shrink();
+    return Positioned(
+      left: 20,
+      right: 20,
+      bottom: 92,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
+        decoration: BoxDecoration(
+          color: TancyColors.surfaceHigh.withValues(alpha: 0.9),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                gradient: const LinearGradient(colors: [Color(0xFF1B2836), Color(0xFF213E57)]),
+              ),
+              child: const Icon(Icons.music_note_rounded, color: Colors.white70, size: 18),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+                  Text(song.artist ?? 'Unknown Artist', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: TancyColors.textDim)),
+                ],
+              ),
+            ),
+            IconButton(onPressed: store.previous, icon: const Icon(Icons.skip_previous_rounded, size: 18)),
+            IconButton(onPressed: store.togglePlayPause, icon: Icon(store.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 18, color: TancyColors.primary)),
+            IconButton(onPressed: store.next, icon: const Icon(Icons.skip_next_rounded, size: 18)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomNav() {
+    final items = const [
+      (Icons.library_music_rounded, 'Library'),
+      (Icons.playlist_play_rounded, 'Playlists'),
+      (Icons.play_circle_rounded, 'Player'),
+      (Icons.settings_rounded, 'Settings'),
+    ];
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 20),
+      decoration: BoxDecoration(
+        color: TancyColors.surfaceHigh.withValues(alpha: 0.75),
+        borderRadius: const BorderRadius.only(topLeft: Radius.circular(28), topRight: Radius.circular(28)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: List.generate(items.length, (i) {
+          final active = tab == i;
+          return InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: () => setState(() => tab = i),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: active ? TancyColors.primary : Colors.transparent,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(items[i].$1, color: active ? const Color(0xFF003840) : TancyColors.textDim, size: 22),
+                  const SizedBox(height: 2),
+                  Text(
+                    items[i].$2,
+                    style: TextStyle(fontSize: 10, letterSpacing: 1.2, color: active ? const Color(0xFF003840) : TancyColors.textDim, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _glassCard({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: TancyColors.surfaceHigh.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _chipBtn(String label, IconData icon, Future<void> Function() onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(99),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(99),
+          color: TancyColors.surfaceHigh,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: TancyColors.primary, size: 16),
+            const SizedBox(width: 6),
+            Text(label),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _timerBtn(String label, int m, {bool danger = false}) {
+    final active = m > 0 && store.sleepTimerSeconds == m * 60;
+    return InkWell(
+      onTap: () => store.startSleepTimer(m),
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        width: 82,
+        height: 78,
+        decoration: BoxDecoration(
+          color: active ? TancyColors.surfaceHigh : TancyColors.surfaceLow,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: danger ? TancyColors.secondary.withValues(alpha: 0.35) : Colors.transparent),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: danger ? TancyColors.secondary : (active ? TancyColors.primary : TancyColors.text),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -513,16 +888,17 @@ class _PlayerPageState extends State<PlayerPage> {
     await showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
+        backgroundColor: TancyColors.surface,
         title: const Text('创建歌单'),
-        content: TextField(controller: controller, decoration: const InputDecoration(hintText: '例如：夜间通勤')),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(hintText: '例如：夜间通勤'),
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           FilledButton(
             onPressed: () async {
               await store.createPlaylist(controller.text);
-              if (store.playlists.isNotEmpty && selectedPlaylist.isEmpty) {
-                selectedPlaylist = store.playlists.keys.first;
-              }
               if (mounted) Navigator.pop(context);
             },
             child: const Text('创建'),
@@ -532,26 +908,34 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
-  Future<void> _chooseSleepTimer() async {
+  Future<void> _addToPlaylistSheet(int songId) async {
+    if (store.playlists.isEmpty) {
+      await _createPlaylistDialog();
+      if (store.playlists.isEmpty) return;
+    }
+    if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
+      backgroundColor: TancyColors.surface,
       builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: ListView(
+          shrinkWrap: true,
           children: [
-            ListTile(title: const Text('15 分钟后停止'), onTap: () => _setSleep(15)),
-            ListTile(title: const Text('30 分钟后停止'), onTap: () => _setSleep(30)),
-            ListTile(title: const Text('60 分钟后停止'), onTap: () => _setSleep(60)),
-            ListTile(title: const Text('取消定时'), onTap: () => _setSleep(0)),
+            const ListTile(title: Text('加入歌单')),
+            ...store.playlists.keys.map(
+              (name) => ListTile(
+                title: Text(name),
+                trailing: const Icon(Icons.playlist_add_rounded, color: TancyColors.primary),
+                onTap: () async {
+                  await store.addToPlaylist(name, songId);
+                  if (mounted) Navigator.pop(context);
+                },
+              ),
+            ),
           ],
         ),
       ),
     );
-  }
-
-  void _setSleep(int min) {
-    store.startSleepTimer(min);
-    Navigator.pop(context);
   }
 
   Future<void> _runDuplicateScan() async {
@@ -561,45 +945,75 @@ class _PlayerPageState extends State<PlayerPage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未发现重复音频')));
       return;
     }
-    await showDialog<void>(
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('重复音频提示'),
-        content: SizedBox(
-          width: 420,
+      isScrollControlled: true,
+      backgroundColor: TancyColors.background,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        builder: (_, ctrl) => Container(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
           child: ListView(
-            shrinkWrap: true,
-            children: store.duplicateGroups.take(20).map((g) {
-              final first = g.songs.first;
-              return ListTile(
-                dense: true,
-                title: Text(first.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: Text('重复 ${g.songs.length} 首 | hash ${g.hash.substring(0, 10)}...'),
-              );
-            }).toList(),
+            controller: ctrl,
+            children: [
+              Text('Duplicate Songs Detected', style: GoogleFonts.spaceGrotesk(fontSize: 28, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              const Text('Verification Method: SHA-256 Hash', style: TextStyle(color: TancyColors.textDim)),
+              const SizedBox(height: 16),
+              for (final g in store.duplicateGroups.take(30))
+                Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: TancyColors.surfaceLow,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Hash: ${g.hash.substring(0, 10)}...', style: const TextStyle(color: TancyColors.textDim, fontSize: 12)),
+                      const SizedBox(height: 8),
+                      ...g.songs.map(
+                        (s) => Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.music_note_rounded, size: 14, color: TancyColors.primary),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
           ),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('知道了'))],
       ),
-    );
-  }
-
-  Widget _chip(String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(99),
-        color: const Color(0x2138D9B7),
-        border: Border.all(color: const Color(0x6638D9B7)),
-      ),
-      child: Text(text),
     );
   }
 
   String _fmt(Duration d) {
     final sec = d.inSeconds;
-    final min = sec ~/ 60;
-    final remain = sec % 60;
-    return '$min:${remain.toString().padLeft(2, '0')}';
+    return '${sec ~/ 60}:${(sec % 60).toString().padLeft(2, '0')}';
+  }
+}
+
+class _AmbientGlow extends StatelessWidget {
+  const _AmbientGlow();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        height: 260,
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          boxShadow: [BoxShadow(color: Color(0x3381ECFF), blurRadius: 160, spreadRadius: 18)],
+        ),
+      ),
+    );
   }
 }
