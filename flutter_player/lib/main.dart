@@ -198,7 +198,7 @@ class PlayerStore extends ChangeNotifier {
         .toList(growable: false);
 
     if (sources.isNotEmpty) {
-      await _player.setAudioSource(ConcatenatingAudioSource(children: sources));
+      await _player.setAudioSources(sources);
       currentSongId ??= songs.first.id;
     } else {
       await _player.stop();
@@ -736,8 +736,6 @@ class _TancyHomePageState extends State<TancyHomePage> {
           min: 0,
           max: max,
           onChanged: store.seek,
-          activeColor: TancyColors.primary,
-          inactiveColor: TancyColors.outline.withValues(alpha: 0.3),
         ),
         Row(
           children: [
@@ -795,7 +793,6 @@ class _TancyHomePageState extends State<TancyHomePage> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 value: store.timerEnabled,
-                activeColor: TancyColors.primary2,
                 onChanged: store.setTimerEnabled,
                 title: const Text('启用定时'),
               ),
@@ -810,7 +807,6 @@ class _TancyHomePageState extends State<TancyHomePage> {
                       divisions: 180,
                       label: '${store.timerMinutes} 分钟',
                       onChanged: store.setTimerMinutes,
-                      activeColor: TancyColors.primary,
                     ),
                   ),
                   const Text('180 分钟'),
@@ -819,7 +815,6 @@ class _TancyHomePageState extends State<TancyHomePage> {
               Text('当前：${store.timerMinutes} 分钟', style: const TextStyle(color: TancyColors.textDim)),
               CheckboxListTile(
                 value: store.stopAfterCurrentSong,
-                activeColor: TancyColors.primary2,
                 contentPadding: EdgeInsets.zero,
                 onChanged: (v) => store.setStopAfterCurrentSong(v ?? false),
                 title: const Text('播放完整歌曲后停止'),
@@ -835,7 +830,6 @@ class _TancyHomePageState extends State<TancyHomePage> {
         const SizedBox(height: 16),
         SwitchListTile(
           value: store.showNotificationControl,
-          activeColor: TancyColors.primary2,
           onChanged: store.setNotificationControl,
           title: const Text('Show Notification Control'),
           subtitle: const Text('Keep playback actions in status bar', style: TextStyle(color: TancyColors.textDim)),
@@ -858,7 +852,6 @@ class _TancyHomePageState extends State<TancyHomePage> {
           divisions: 60,
           label: '${store.minDurationSeconds}s',
           onChanged: store.setMinDurationSeconds,
-          activeColor: TancyColors.primary,
         ),
         ListTile(
           onTap: _runDuplicateScan,
@@ -921,7 +914,7 @@ class _TancyHomePageState extends State<TancyHomePage> {
   }
 
   Widget _bottomNav() {
-    final items = const [
+    const items = [
       (Icons.library_music_rounded, 'Library'),
       (Icons.playlist_play_rounded, 'Playlists'),
       (Icons.play_circle_rounded, 'Player'),
@@ -1218,9 +1211,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         title: Text(widget.name),
         actions: [
           IconButton(
-            onPressed: () async {
-              await widget.store.deletePlaylist(widget.name);
-              if (mounted) Navigator.pop(context);
+            onPressed: () {
+              widget.store.deletePlaylist(widget.name);
+              Navigator.pop(context);
             },
             icon: const Icon(Icons.delete_rounded, color: TancyColors.secondary),
           ),
