@@ -63,7 +63,13 @@ jobs:
                       'android {\n    namespace "com.lucasjosino.on_audio_query"',
                       1,
                   )
-                  p.write_text(s, encoding="utf-8")
+              if "kotlinOptions" not in s:
+                  s = s.replace(
+                      "    defaultConfig {\n        minSdkVersion 16\n    }\n",
+                      "    defaultConfig {\n        minSdkVersion 16\n    }\n\n    kotlinOptions {\n        jvmTarget = \"1.8\"\n    }\n",
+                      1,
+                  )
+              p.write_text(s, encoding="utf-8")
           PY
 
       - name: Build Release APK
