@@ -447,6 +447,7 @@ class _TancyHomePageState extends State<TancyHomePage> {
   final FocusNode _searchFocus = FocusNode();
   int tab = 2;
   String search = '';
+  double _minDurationPreview = -1;
 
   @override
   void initState() {
@@ -485,6 +486,29 @@ class _TancyHomePageState extends State<TancyHomePage> {
               ],
             ),
           ),
+          if (store.duplicateScanning)
+            Positioned.fill(
+              child: ColoredBox(
+                color: Colors.black54,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: TancyColors.surface,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(width: 12),
+                        Text('正在计算音频 Hash...'),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
       bottomNavigationBar: _bottomNav(),
@@ -616,6 +640,13 @@ class _TancyHomePageState extends State<TancyHomePage> {
         const SizedBox(height: 18),
         Text('Songs', style: GoogleFonts.spaceGrotesk(fontSize: 30, fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
+        if (filtered.isEmpty)
+          _glassCard(
+            child: Text(
+              search.trim().isEmpty ? '没有可显示的歌曲，点击 Rescan 扫描本地音频。' : '没有匹配 “$search” 的结果。',
+              style: const TextStyle(color: TancyColors.textDim),
+            ),
+          ),
         for (final s in filtered) _songTile(s),
       ],
     );
@@ -660,7 +691,10 @@ class _TancyHomePageState extends State<TancyHomePage> {
               margin: const EdgeInsets.only(bottom: 12),
               child: InkWell(
                 borderRadius: BorderRadius.circular(18),
-                onTap: () => _openPlaylist(e.key),
+                onTap: () async {
+                  HapticFeedback.selectionClick();
+                  await _openPlaylist(e.key);
+                },
                 onLongPress: () => _confirmDeletePlaylist(e.key),
                 child: Container(
                   padding: const EdgeInsets.all(14),
@@ -864,12 +898,17 @@ class _TancyHomePageState extends State<TancyHomePage> {
           subtitle: Text('过滤短于 ${store.minDurationSeconds}s 的音频（铃声/系统音）', style: const TextStyle(color: TancyColors.textDim)),
         ),
         Slider(
-          value: store.minDurationSeconds.toDouble(),
+          value: _minDurationPreview >= 0 ? _minDurationPreview : store.minDurationSeconds.toDouble(),
           min: 0,
           max: 300,
           divisions: 60,
-          label: '${store.minDurationSeconds}s',
-          onChanged: store.setMinDurationSeconds,
+          label: '${(_minDurationPreview >= 0 ? _minDurationPreview : store.minDurationSeconds.toDouble()).round()}s',
+          onChanged: (v) => setState(() => _minDurationPreview = v),
+          onChangeEnd: (v) async {
+            await store.setMinDurationSeconds(v);
+            if (!mounted) return;
+            setState(() => _minDurationPreview = -1);
+          },
         ),
         ListTile(
           onTap: _runDuplicateScan,
@@ -886,7 +925,10 @@ class _TancyHomePageState extends State<TancyHomePage> {
     final active = store.currentSongId == s.id;
     return InkWell(
       borderRadius: BorderRadius.circular(16),
-      onTap: () => store.playById(s.id),
+      onTap: () async {
+        HapticFeedback.selectionClick();
+        await store.playById(s.id);
+      },
       onLongPress: () => _showSongDetails(s),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
@@ -950,7 +992,10 @@ class _TancyHomePageState extends State<TancyHomePage> {
           final active = tab == i;
           return InkWell(
             borderRadius: BorderRadius.circular(999),
-            onTap: () => setState(() => tab = i),
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() => tab = i);
+            },
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               decoration: BoxDecoration(
@@ -988,7 +1033,10 @@ class _TancyHomePageState extends State<TancyHomePage> {
 
   Widget _chipBtn(String label, IconData icon, Future<void> Function() onTap) {
     return InkWell(
-      onTap: onTap,
+      onTap: () async {
+        HapticFeedback.lightImpact();
+        await onTap();
+      },
       borderRadius: BorderRadius.circular(99),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1301,29 +1349,58 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       ),
       body: songs.isEmpty
           ? const Center(child: Text('歌单为空', style: TextStyle(color: TancyColors.textDim)))
-          : ListView.builder(
+          : ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-              itemCount: songs.length,
-              itemBuilder: (_, i) {
-                final s = songs[i];
-                return ListTile(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  tileColor: TancyColors.surfaceLow,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text(
-                    s.artist?.isNotEmpty == true ? s.artist! : 'Unknown Artist',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.only(bottom: 10),
+                  decoration: BoxDecoration(
+                    color: TancyColors.surfaceLow,
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  onTap: () => widget.store.playById(s.id),
-                  onLongPress: () => widget.onSongLongPress(s),
-                  trailing: IconButton(
-                    onPressed: () => widget.store.removeFromPlaylist(widget.name, s.id),
-                    icon: const Icon(Icons.remove_circle_outline_rounded, color: TancyColors.secondary),
+                  child: Row(
+                    children: [
+                      Text('共 ${songs.length} 首', style: const TextStyle(color: TancyColors.textDim)),
+                      const Spacer(),
+                      FilledButton.tonalIcon(
+                        onPressed: () async {
+                          HapticFeedback.lightImpact();
+                          await widget.store.playById(songs.first.id);
+                        },
+                        icon: const Icon(Icons.play_arrow_rounded),
+                        label: const Text('播放全部'),
+                      ),
+                    ],
                   ),
-                );
-              },
+                ),
+                ...songs.map((s) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        tileColor: TancyColors.surfaceLow,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(
+                          s.artist?.isNotEmpty == true ? s.artist! : 'Unknown Artist',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () => widget.store.playById(s.id),
+                        onLongPress: () => widget.onSongLongPress(s),
+                        trailing: IconButton(
+                          onPressed: () async {
+                            await widget.store.removeFromPlaylist(widget.name, s.id);
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('已从歌单移除')),
+                            );
+                          },
+                          icon: const Icon(Icons.remove_circle_outline_rounded, color: TancyColors.secondary),
+                        ),
+                      ),
+                    )),
+              ],
             ),
     );
   }
