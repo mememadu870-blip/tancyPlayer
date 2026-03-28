@@ -375,9 +375,12 @@ class _PlayerPageState extends State<PlayerPage> {
           Text(artist, style: TextStyle(color: Colors.white.withValues(alpha: 0.7))),
           const SizedBox(height: 8),
           Slider(
-            value: store.position.inMilliseconds.toDouble().clamp(0, store.duration.inMilliseconds.toDouble().clamp(1, 1 << 30)),
+            value: store.position.inMilliseconds
+                .toDouble()
+                .clamp(0.0, store.duration.inMilliseconds.toDouble().clamp(1.0, (1 << 30).toDouble()))
+                .toDouble(),
             min: 0,
-            max: store.duration.inMilliseconds.toDouble().clamp(1, 1 << 30),
+            max: store.duration.inMilliseconds.toDouble().clamp(1.0, (1 << 30).toDouble()).toDouble(),
             onChanged: (v) => store.seek(v),
           ),
           Row(
@@ -464,7 +467,7 @@ class _PlayerPageState extends State<PlayerPage> {
               crossAxisAlignment: WrapCrossAlignment.center,
               spacing: 4,
               children: [
-                Text(_fmt(Duration(milliseconds: s.duration))),
+                Text(_fmt(Duration(milliseconds: s.duration ?? 0))),
                 IconButton(
                   onPressed: () => store.toggleFavorite(s.id),
                   icon: Icon(liked ? Icons.favorite : Icons.favorite_border, color: liked ? Colors.pinkAccent : null),
