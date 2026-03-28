@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:on_audio_query/on_audio_query.dart';
@@ -509,17 +510,34 @@ class _TancyHomePageState extends State<TancyHomePage> {
           ),
           const Spacer(),
           IconButton(
-            onPressed: () {
-              setState(() => tab = 0);
-              Future<void>.delayed(const Duration(milliseconds: 120), () {
-                if (mounted) _searchFocus.requestFocus();
-              });
-            },
+            onPressed: _openGlobalSearch,
             icon: const Icon(Icons.search_rounded, color: TancyColors.textDim),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _openGlobalSearch() async {
+    if (store.songs.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('当前没有可搜索的歌曲，请先扫描音乐')),
+      );
+      return;
+    }
+    final picked = await showSearch<SongModel?>(
+      context: context,
+      delegate: SongSearchDelegate(
+        songs: store.songs,
+        onSongLongPress: _showSongDetails,
+      ),
+    );
+    if (picked != null) {
+      await store.playById(picked.id);
+      if (!mounted) return;
+      setState(() => tab = 2);
+    }
   }
 
   Widget _bodyForTab() {
@@ -1005,8 +1023,15 @@ class _TancyHomePageState extends State<TancyHomePage> {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           FilledButton(
             onPressed: () async {
-              await store.createPlaylist(controller.text);
-              if (mounted) Navigator.pop(context);
+              final name = controller.text.trim();
+              await store.createPlaylist(name);
+              if (!mounted) return;
+              Navigator.pop(context);
+              if (name.isNotEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('已创建歌单：$name')),
+                );
+              }
             },
             child: const Text('创建'),
           ),
@@ -1035,7 +1060,11 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 trailing: const Icon(Icons.playlist_add_rounded, color: TancyColors.primary),
                 onTap: () async {
                   await store.addToPlaylist(name, songId);
-                  if (mounted) Navigator.pop(context);
+                  if (!mounted) return;
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('已加入歌单：$name')),
+                  );
                 },
               ),
             ),
@@ -1130,6 +1159,10 @@ class _TancyHomePageState extends State<TancyHomePage> {
     );
     if (ok == true) {
       await store.deletePlaylist(name);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已删除歌单：$name')),
+      );
     }
   }
 
@@ -1157,7 +1190,35 @@ class _TancyHomePageState extends State<TancyHomePage> {
             ),
           ),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭'))],
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final path = details['路径'] ?? '';
+              if (path.isNotEmpty) {
+                await Clipboard.setData(ClipboardData(text: path));
+              }
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('已复制文件路径')),
+              );
+            },
+            child: const Text('复制路径'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final hash = details['Hash'] ?? '';
+              if (hash.isNotEmpty && hash != 'N/A') {
+                await Clipboard.setData(ClipboardData(text: hash));
+              }
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('已复制 Hash')),
+              );
+            },
+            child: const Text('复制Hash'),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
+        ],
       ),
     );
   }
@@ -1212,8 +1273,27 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         actions: [
           IconButton(
             onPressed: () {
-              widget.store.deletePlaylist(widget.name);
-              Navigator.pop(context);
+              showDialog<void>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  backgroundColor: TancyColors.surface,
+                  title: const Text('删除歌单'),
+                  content: Text('确认删除歌单「${widget.name}」吗？'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                    FilledButton(
+                      onPressed: () async {
+                        await widget.store.deletePlaylist(widget.name);
+                        if (!context.mounted) return;
+                        Navigator.pop(context); // close confirm
+                        Navigator.pop(context); // close detail page
+                      },
+                      style: FilledButton.styleFrom(backgroundColor: TancyColors.secondary),
+                      child: const Text('删除'),
+                    ),
+                  ],
+                ),
+              );
             },
             icon: const Icon(Icons.delete_rounded, color: TancyColors.secondary),
           ),
@@ -1295,6 +1375,83 @@ class _AutoMarqueeTextState extends State<AutoMarqueeText> {
         );
       },
     );
+  }
+}
+
+class SongSearchDelegate extends SearchDelegate<SongModel?> {
+  final List<SongModel> songs;
+  final Future<void> Function(SongModel song) onSongLongPress;
+
+  SongSearchDelegate({
+    required this.songs,
+    required this.onSongLongPress,
+  });
+
+  @override
+  ThemeData appBarTheme(BuildContext context) {
+    final base = Theme.of(context);
+    return base.copyWith(
+      appBarTheme: const AppBarTheme(
+        backgroundColor: TancyColors.background,
+        foregroundColor: Colors.white,
+      ),
+      inputDecorationTheme: const InputDecorationTheme(
+        hintStyle: TextStyle(color: TancyColors.textDim),
+      ),
+    );
+  }
+
+  @override
+  List<Widget>? buildActions(BuildContext context) {
+    return [
+      IconButton(
+        onPressed: () => query = '',
+        icon: const Icon(Icons.close_rounded),
+      ),
+    ];
+  }
+
+  @override
+  Widget? buildLeading(BuildContext context) {
+    return IconButton(
+      onPressed: () => close(context, null),
+      icon: const Icon(Icons.arrow_back_rounded),
+    );
+  }
+
+  List<SongModel> _filtered() {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return songs.take(40).toList(growable: false);
+    return songs.where((s) {
+      return s.title.toLowerCase().contains(q) ||
+          (s.artist ?? '').toLowerCase().contains(q) ||
+          (s.album ?? '').toLowerCase().contains(q);
+    }).toList(growable: false);
+  }
+
+  @override
+  Widget buildResults(BuildContext context) {
+    final data = _filtered();
+    if (data.isEmpty) {
+      return const Center(child: Text('没有匹配结果', style: TextStyle(color: TancyColors.textDim)));
+    }
+    return ListView.builder(
+      itemCount: data.length,
+      itemBuilder: (_, i) {
+        final s = data[i];
+        return ListTile(
+          title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(s.artist ?? 'Unknown Artist', maxLines: 1, overflow: TextOverflow.ellipsis),
+          onTap: () => close(context, s),
+          onLongPress: () => onSongLongPress(s),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget buildSuggestions(BuildContext context) {
+    return buildResults(context);
   }
 }
 
