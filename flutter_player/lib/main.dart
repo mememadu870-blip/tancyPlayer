@@ -61,21 +61,30 @@ class DuplicateGroup {
   const DuplicateGroup({required this.hash, required this.songs});
 }
 
+enum PlaylistSongSort {
+  name,
+  size,
+  createdTime,
+}
+
 class _HashCacheEntry {
   final int size;
   final int modifiedMs;
   final String hash;
+  final String? sampleSignature;
 
   const _HashCacheEntry({
     required this.size,
     required this.modifiedMs,
     required this.hash,
+    this.sampleSignature,
   });
 
   Map<String, Object> toJson() => {
         'size': size,
         'modifiedMs': modifiedMs,
         'hash': hash,
+        if (sampleSignature != null) 'sampleSignature': sampleSignature!,
       };
 
   static _HashCacheEntry? fromJson(Object? raw) {
@@ -83,8 +92,14 @@ class _HashCacheEntry {
     final size = raw['size'];
     final modifiedMs = raw['modifiedMs'];
     final hash = raw['hash'];
+    final sampleSignature = raw['sampleSignature'];
     if (size is! int || modifiedMs is! int || hash is! String) return null;
-    return _HashCacheEntry(size: size, modifiedMs: modifiedMs, hash: hash);
+    return _HashCacheEntry(
+      size: size,
+      modifiedMs: modifiedMs,
+      hash: hash,
+      sampleSignature: sampleSignature is String ? sampleSignature : null,
+    );
   }
 }
 
@@ -123,6 +138,7 @@ class PlayerStore extends ChangeNotifier {
   static const _kStopAfterSong = 'stop_after_song';
   static const _kMinDurationSec = 'min_duration_sec';
   static const _kHashCache = 'hash_cache_v2';
+  static const _kAudioTypes = 'audio_types';
 
   final OnAudioQuery _audioQuery = OnAudioQuery();
   final AudioPlayer _player = AudioPlayer();
@@ -141,6 +157,8 @@ class PlayerStore extends ChangeNotifier {
   int timerMinutes = 30;
   bool stopAfterCurrentSong = false;
   int minDurationSeconds = 30;
+  Set<String> selectedAudioTypes = <String>{};
+  List<String> availableAudioTypes = <String>[];
   LoopMode loopMode = LoopMode.all;
 
   Duration position = Duration.zero;
@@ -199,6 +217,10 @@ class PlayerStore extends ChangeNotifier {
     timerMinutes = _prefs?.getInt(_kTimerMinutes) ?? 30;
     stopAfterCurrentSong = _prefs?.getBool(_kStopAfterSong) ?? false;
     minDurationSeconds = _prefs?.getInt(_kMinDurationSec) ?? 30;
+    selectedAudioTypes =
+        (_prefs?.getStringList(_kAudioTypes) ?? const <String>[])
+            .map((type) => type.toLowerCase())
+            .toSet();
     _loadHashCache();
 
     await _preparePlayerStreams();
@@ -260,9 +282,18 @@ class PlayerStore extends ChangeNotifier {
       uriType: UriType.EXTERNAL,
       ignoreCase: true,
     );
+    availableAudioTypes = queried
+        .map((song) => _fileExtension(song.data).toLowerCase())
+        .where((type) => type.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
     songs = queried.where((s) {
       final d = s.duration ?? 0;
-      return d >= minDurationSeconds * 1000;
+      final type = _fileExtension(s.data).toLowerCase();
+      final matchesType =
+          selectedAudioTypes.isEmpty || selectedAudioTypes.contains(type);
+      return d >= minDurationSeconds * 1000 && matchesType;
     }).toList(growable: true);
 
     await _resetAudioSources(
@@ -397,6 +428,31 @@ class PlayerStore extends ChangeNotifier {
   Future<void> setMinDurationSeconds(double seconds) async {
     minDurationSeconds = seconds.round().clamp(0, 300);
     await _prefs?.setInt(_kMinDurationSec, minDurationSeconds);
+    await scanSongs();
+  }
+
+  Future<void> setAudioTypeEnabled(String type, bool enabled) async {
+    final normalized = type.toLowerCase();
+    if (enabled) {
+      selectedAudioTypes.add(normalized);
+    } else {
+      selectedAudioTypes.remove(normalized);
+    }
+    await _prefs?.setStringList(
+        _kAudioTypes, selectedAudioTypes.toList()..sort());
+    await scanSongs();
+  }
+
+  Future<void> clearAudioTypeFilter() async {
+    selectedAudioTypes.clear();
+    await _prefs?.remove(_kAudioTypes);
+    await scanSongs();
+  }
+
+  Future<void> setAudioTypes(Set<String> types) async {
+    selectedAudioTypes = types.map((type) => type.toLowerCase()).toSet();
+    await _prefs?.setStringList(
+        _kAudioTypes, selectedAudioTypes.toList()..sort());
     await scanSongs();
   }
 
@@ -563,8 +619,13 @@ class PlayerStore extends ChangeNotifier {
     duplicateGroups = [];
     notifyListeners();
 
-    final candidates =
-        <({SongModel song, File file, int size, int modifiedMs})>[];
+    final candidates = <({
+      SongModel song,
+      File file,
+      int size,
+      int modifiedMs,
+      int durationMs
+    })>[];
     for (final s in songs) {
       final path = s.data;
       if (path.isEmpty) continue;
@@ -576,15 +637,32 @@ class PlayerStore extends ChangeNotifier {
         file: file,
         size: stat.size,
         modifiedMs: stat.modified.millisecondsSinceEpoch,
+        durationMs: s.duration ?? 0,
       ));
     }
 
-    final sizeGroups =
-        <int, List<({SongModel song, File file, int size, int modifiedMs})>>{};
+    final sizeGroups = <String,
+        List<
+            ({
+              SongModel song,
+              File file,
+              int size,
+              int modifiedMs,
+              int durationMs
+            })>>{};
     for (final item in candidates) {
+      final key = '${item.size}:${item.durationMs}';
       sizeGroups
-          .putIfAbsent(item.size,
-              () => <({SongModel song, File file, int size, int modifiedMs})>[])
+          .putIfAbsent(
+            key,
+            () => <({
+              SongModel song,
+              File file,
+              int size,
+              int modifiedMs,
+              int durationMs
+            })>[],
+          )
           .add(item);
     }
 
@@ -592,29 +670,56 @@ class PlayerStore extends ChangeNotifier {
     for (final sizeGroup
         in sizeGroups.values.where((group) => group.length > 1)) {
       final sampleGroups = <String,
-          List<({SongModel song, File file, int size, int modifiedMs})>>{};
-      for (final item in sizeGroup) {
-        final signature = await _quickFileSignature(
-          item.file,
-          size: item.size,
-          modifiedMs: item.modifiedMs,
-        );
-        sampleGroups
-            .putIfAbsent(
-                signature,
-                () =>
-                    <({SongModel song, File file, int size, int modifiedMs})>[])
-            .add(item);
-      }
-      for (final sampleGroup
-          in sampleGroups.values.where((group) => group.length > 1)) {
-        for (final item in sampleGroup) {
-          final hash = await _sha256File(
+          List<
+              ({
+                SongModel song,
+                File file,
+                int size,
+                int modifiedMs,
+                int durationMs
+              })>>{};
+      final signatureResults = await _mapInBatches(
+        sizeGroup,
+        8,
+        (item) async => (
+          item: item,
+          signature: await _quickFileSignature(
             item.file,
             size: item.size,
             modifiedMs: item.modifiedMs,
-          );
-          grouped.putIfAbsent(hash, () => <SongModel>[]).add(item.song);
+          ),
+        ),
+      );
+      for (final result in signatureResults) {
+        sampleGroups
+            .putIfAbsent(
+              result.signature,
+              () => <({
+                SongModel song,
+                File file,
+                int size,
+                int modifiedMs,
+                int durationMs
+              })>[],
+            )
+            .add(result.item);
+      }
+      for (final sampleGroup
+          in sampleGroups.values.where((group) => group.length > 1)) {
+        final hashResults = await _mapInBatches(
+          sampleGroup,
+          4,
+          (item) async => (
+            song: item.song,
+            hash: await _sha256File(
+              item.file,
+              size: item.size,
+              modifiedMs: item.modifiedMs,
+            ),
+          ),
+        );
+        for (final item in hashResults) {
+          grouped.putIfAbsent(item.hash, () => <SongModel>[]).add(item.song);
         }
       }
     }
@@ -638,7 +743,8 @@ class PlayerStore extends ChangeNotifier {
     final cached = _hashCache[file.path];
     if (cached != null &&
         cached.size == size &&
-        cached.modifiedMs == modifiedMs) {
+        cached.modifiedMs == modifiedMs &&
+        cached.hash.isNotEmpty) {
       return cached.hash;
     }
     final digest = await sha256.bind(file.openRead()).first;
@@ -647,6 +753,7 @@ class PlayerStore extends ChangeNotifier {
       size: size,
       modifiedMs: modifiedMs,
       hash: hash,
+      sampleSignature: cached?.sampleSignature,
     );
     return hash;
   }
@@ -656,6 +763,13 @@ class PlayerStore extends ChangeNotifier {
     required int size,
     required int modifiedMs,
   }) async {
+    final cached = _hashCache[file.path];
+    if (cached != null &&
+        cached.size == size &&
+        cached.modifiedMs == modifiedMs &&
+        cached.sampleSignature != null) {
+      return cached.sampleSignature!;
+    }
     final raf = await file.open();
     try {
       const chunkSize = 64 * 1024;
@@ -670,10 +784,32 @@ class PlayerStore extends ChangeNotifier {
         ...head,
         ...tail,
       ];
-      return md5.convert(sampled).toString();
+      final signature = md5.convert(sampled).toString();
+      _hashCache[file.path] = _HashCacheEntry(
+        size: size,
+        modifiedMs: modifiedMs,
+        hash: cached?.hash ?? '',
+        sampleSignature: signature,
+      );
+      return signature;
     } finally {
       await raf.close();
     }
+  }
+
+  Future<List<R>> _mapInBatches<T, R>(
+    List<T> items,
+    int batchSize,
+    Future<R> Function(T item) mapper,
+  ) async {
+    final results = <R>[];
+    for (var start = 0; start < items.length; start += batchSize) {
+      final end =
+          start + batchSize < items.length ? start + batchSize : items.length;
+      final batch = items.sublist(start, end);
+      results.addAll(await Future.wait(batch.map(mapper)));
+    }
+    return results;
   }
 
   Future<SongDetails> buildSongDetails(SongModel song) async {
@@ -1167,7 +1303,7 @@ class _TancyHomePageState extends State<TancyHomePage> {
         store.position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 180),
       children: [
         Container(
           height: 360,
@@ -1279,8 +1415,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
             GestureDetector(
               onTap: store.togglePlayPause,
               child: Container(
-                width: 86,
-                height: 86,
+                width: 80,
+                height: 80,
                 decoration: const BoxDecoration(
                   shape: BoxShape.circle,
                   gradient: LinearGradient(
@@ -1298,11 +1434,12 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 onPressed: store.next,
                 icon: const Icon(Icons.skip_next_rounded, size: 44)),
             IconButton(
-                onPressed: _runDuplicateScan,
+                onPressed: song == null ? null : () => _showSongMenu(song),
                 icon: const Icon(Icons.more_vert_rounded,
                     color: TancyColors.textDim)),
           ],
         ),
+        const SizedBox(height: 24),
       ],
     );
   }
@@ -1400,13 +1537,60 @@ class _TancyHomePageState extends State<TancyHomePage> {
             setState(() => _minDurationPreview = -1);
           },
         ),
+        const SizedBox(height: 8),
+        ListTile(
+          title: const Text('音频文件类型筛选'),
+          subtitle: Text(
+            store.selectedAudioTypes.isEmpty
+                ? '当前：全部类型'
+                : '当前：${store.selectedAudioTypes.map((type) => type.toUpperCase()).join(', ')}',
+            style: const TextStyle(color: TancyColors.textDim),
+          ),
+          trailing: store.selectedAudioTypes.isEmpty
+              ? null
+              : TextButton(
+                  onPressed: store.clearAudioTypeFilter,
+                  child: const Text('清除'),
+                ),
+        ),
+        if (store.availableAudioTypes.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 12),
+            child: Text('扫描后会显示可用的音频类型。',
+                style: TextStyle(color: TancyColors.textDim)),
+          )
+        else
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: store.availableAudioTypes.map((type) {
+              final active = store.selectedAudioTypes.isEmpty ||
+                  store.selectedAudioTypes.contains(type);
+              return FilterChip(
+                selected: active,
+                label: Text(type.toUpperCase()),
+                onSelected: (selected) async {
+                  if (store.selectedAudioTypes.isEmpty && !selected) {
+                    final next = store.availableAudioTypes
+                        .where((item) => item != type)
+                        .map((item) => item.toLowerCase())
+                        .toSet();
+                    await store.setAudioTypes(next);
+                    return;
+                  }
+                  await store.setAudioTypeEnabled(type, selected);
+                },
+              );
+            }).toList(growable: false),
+          ),
+        const SizedBox(height: 12),
         ListTile(
           onTap: _runDuplicateScan,
           leading:
               const Icon(Icons.fingerprint_rounded, color: TancyColors.primary),
           title: const Text('Duplicate Detection (SHA-256)'),
           subtitle: const Text(
-              'Fast scan with size grouping, sample fingerprint and cached hash',
+              'Fast scan with size + duration grouping, cached sample signature and cached hash',
               style: TextStyle(color: TancyColors.textDim)),
         ),
         const SizedBox(height: 4),
@@ -1909,6 +2093,8 @@ class PlaylistDetailPage extends StatefulWidget {
 }
 
 class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
+  PlaylistSongSort _sort = PlaylistSongSort.name;
+
   @override
   void initState() {
     super.initState();
@@ -1927,13 +2113,33 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    final songs = widget.store.playlistSongs(widget.name);
+    final songs = widget.store.playlistSongs(widget.name).toList(growable: true)
+      ..sort(_songComparator);
     return Scaffold(
       backgroundColor: TancyColors.background,
       appBar: AppBar(
         backgroundColor: TancyColors.background,
         title: Text(widget.name),
         actions: [
+          PopupMenuButton<PlaylistSongSort>(
+            initialValue: _sort,
+            onSelected: (value) => setState(() => _sort = value),
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: PlaylistSongSort.name,
+                child: Text('按名称排序'),
+              ),
+              PopupMenuItem(
+                value: PlaylistSongSort.size,
+                child: Text('按大小排序'),
+              ),
+              PopupMenuItem(
+                value: PlaylistSongSort.createdTime,
+                child: Text('按创建时间排序'),
+              ),
+            ],
+            icon: const Icon(Icons.sort_rounded, color: TancyColors.primary),
+          ),
           IconButton(
             onPressed: () {
               showDialog<void>(
@@ -1984,6 +2190,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       Text('共 ${songs.length} 首',
                           style: const TextStyle(color: TancyColors.textDim)),
                       const Spacer(),
+                      Text(_sortLabel(_sort),
+                          style: const TextStyle(color: TancyColors.textDim)),
+                      const SizedBox(width: 12),
                       FilledButton.tonalIcon(
                         onPressed: () async {
                           HapticFeedback.lightImpact();
@@ -2025,6 +2234,44 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               ],
             ),
     );
+  }
+
+  int _songComparator(SongModel a, SongModel b) {
+    switch (_sort) {
+      case PlaylistSongSort.name:
+        return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      case PlaylistSongSort.size:
+        return _fileSizeOf(b).compareTo(_fileSizeOf(a));
+      case PlaylistSongSort.createdTime:
+        return _fileTimeOf(b).compareTo(_fileTimeOf(a));
+    }
+  }
+
+  int _fileSizeOf(SongModel song) {
+    try {
+      return File(song.data).statSync().size;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  int _fileTimeOf(SongModel song) {
+    try {
+      return File(song.data).statSync().changed.millisecondsSinceEpoch;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  String _sortLabel(PlaylistSongSort sort) {
+    switch (sort) {
+      case PlaylistSongSort.name:
+        return '名称';
+      case PlaylistSongSort.size:
+        return '大小';
+      case PlaylistSongSort.createdTime:
+        return '创建时间';
+    }
   }
 }
 

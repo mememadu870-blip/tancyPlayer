@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>tancyPlayer - Now Playing</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;900&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "inverse-on-surface": "#565555",
+              "background": "#0e0e0e",
+              "primary-container": "#00e3fd",
+              "outline": "#767575",
+              "on-background": "#ffffff",
+              "inverse-surface": "#fcf9f8",
+              "on-error": "#490006",
+              "on-surface": "#ffffff",
+              "error": "#ff716c",
+              "surface-container-high": "#20201f",
+              "surface-tint": "#81ecff",
+              "primary": "#81ecff",
+              "on-tertiary-container": "#001d3f",
+              "primary-dim": "#00d4ec",
+              "error-dim": "#d7383b",
+              "primary-fixed-dim": "#00d4ec",
+              "on-secondary": "#430c00",
+              "surface-dim": "#0e0e0e",
+              "tertiary-fixed": "#80b2ff",
+              "surface-container-lowest": "#000000",
+              "tertiary-container": "#599cf9",
+              "on-surface-variant": "#adaaaa",
+              "surface-container-low": "#131313",
+              "surface-container": "#1a1a1a",
+              "on-tertiary-fixed-variant": "#003971",
+              "on-primary-container": "#004d57",
+              "secondary-container": "#b02f00",
+              "primary-fixed": "#00e3fd",
+              "on-primary-fixed": "#003840",
+              "on-tertiary-fixed": "#001835",
+              "on-primary": "#005762",
+              "surface-container-highest": "#262626",
+              "outline-variant": "#484847",
+              "surface": "#0e0e0e",
+              "surface-variant": "#262626",
+              "tertiary": "#70aaff",
+              "secondary": "#ff734a",
+              "on-tertiary": "#002a55",
+              "error-container": "#9f0519",
+              "secondary-fixed-dim": "#ffb19b",
+              "tertiary-fixed-dim": "#65a4ff",
+              "surface-bright": "#2c2c2c",
+              "on-error-container": "#ffa8a3",
+              "on-primary-fixed-variant": "#005762",
+              "on-secondary-fixed": "#661700",
+              "tertiary-dim": "#5c9ffc",
+              "secondary-fixed": "#ffc4b4",
+              "inverse-primary": "#006976",
+              "on-secondary-container": "#fff6f4",
+              "secondary-dim": "#ff734a",
+              "on-secondary-fixed-variant": "#982700"
+            },
+            fontFamily: {
+              "headline": ["Space Grotesk"],
+              "body": ["Inter"],
+              "label": ["Inter"]
+            },
+            borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      }
+      .active-fill {
+        font-variation-settings: 'FILL' 1;
+      }
+      .blur-glow {
+        filter: blur(80px);
+        opacity: 0.15;
+      }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-surface text-on-surface font-body selection:bg-primary/30 min-h-screen">
+<!-- Top AppBar -->
+<header class="fixed top-0 w-full z-50 bg-gradient-to-b from-[#0e0e0e] to-transparent">
+<div class="flex items-center justify-between px-6 py-4 w-full">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[#81ecff]" data-icon="graphic_eq">graphic_eq</span>
+<h1 class="text-[#81ecff] font-['Space_Grotesk'] font-black italic tracking-tighter text-2xl">tancyPlayer</h1>
+</div>
+<div class="flex items-center gap-4">
+<button class="text-[#adaaaa] hover:text-[#81ecff] transition-colors active:scale-95 duration-200">
+<span class="material-symbols-outlined" data-icon="search">search</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Main Canvas -->
+<main class="pt-20 pb-32 px-6 flex flex-col items-center max-w-lg mx-auto min-h-screen relative overflow-hidden">
+<!-- Background Ambient Glow -->
+<div class="absolute top-20 left-1/2 -translate-x-1/2 w-full h-[400px] bg-primary blur-glow rounded-full -z-10"></div>
+<!-- Album Art Section -->
+<section class="w-full mt-4 mb-10 relative">
+<div class="aspect-square w-full rounded-[40px] overflow-hidden shadow-2xl bg-surface-container-high group transition-transform duration-500 hover:scale-[1.02]">
+<img alt="Neon geometric structure with deep blue and cyan lighting in a futuristic void" class="w-full h-full object-cover" data-alt="high-fashion editorial photography of a neon geometric glass structure with deep blue and cyan atmospheric lighting in a futuristic void" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC94AkYnRONj6l9QBhqRQQiWt7LUDAyglOaBrEvrB0hRU_0aMww2ihd1vY-K49XFAF5uz7tFg52AU7MkUUup23uhQc_MpHAMMoVNmT2Sh8Eg1nXYXQKptzVm1UF5G_EEoZZTVAR5lEsGpEDkq7P4EQpTVszafwvWO2St_oNPKZCK-EiE3JTpDSwNlenOktKuDT9nH66Cl6Bhl3nWuC5NWgc0V6W_YNQSudjxLEGJJ1rcmqv1kisuSLwMEuzFkJ7Paz48pEhbs2HHA"/>
+<!-- Glass Overlay Meta (Editorial Rule) -->
+<div class="absolute bottom-6 right-6 left-6 p-4 bg-surface-variant/60 backdrop-blur-xl rounded-2xl border border-white/5 flex items-center justify-between">
+<div>
+<p class="text-[10px] uppercase tracking-[0.2em] text-primary font-bold">Currently Playing</p>
+<p class="text-xs text-on-surface-variant">Spatial Audio Enabled</p>
+</div>
+<span class="material-symbols-outlined text-primary text-xl active-fill" data-icon="equalizer" style="font-variation-settings: 'FILL' 1;">equalizer</span>
+</div>
+</div>
+</section>
+<!-- Track Info Section -->
+<section class="w-full flex items-start justify-between mb-8">
+<div class="flex-1 text-left">
+<h2 class="font-headline font-bold text-3xl tracking-tight text-on-surface mb-1">Cybernetic Soul</h2>
+<p class="text-on-surface-variant text-lg font-medium opacity-80">The Obsidian Collective</p>
+</div>
+<button class="mt-2 text-on-surface-variant hover:text-secondary transition-colors duration-300">
+<span class="material-symbols-outlined text-3xl active-fill" data-icon="favorite" style="font-variation-settings: 'FILL' 1;">favorite</span>
+</button>
+</section>
+<!-- Progress Bar Section -->
+<section class="w-full mb-10">
+<div class="relative w-full h-1.5 bg-outline-variant/20 rounded-full group cursor-pointer">
+<!-- Active Progress -->
+<div class="absolute top-0 left-0 h-full w-[42%] bg-gradient-to-r from-primary to-primary-container rounded-full relative">
+<!-- Scrubber Thumb -->
+<div class="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 bg-surface-bright rounded-full shadow-lg border-2 border-primary scale-0 group-hover:scale-100 transition-transform duration-200"></div>
+</div>
+</div>
+<div class="flex justify-between mt-3">
+<span class="text-[10px] font-bold tracking-widest text-on-surface-variant opacity-60">02:14</span>
+<span class="text-[10px] font-bold tracking-widest text-on-surface-variant opacity-60">05:32</span>
+</div>
+</section>
+<!-- Playback Controls -->
+<section class="w-full flex items-center justify-around mb-10">
+<!-- Repeat Mode -->
+<button class="text-on-surface-variant hover:text-primary transition-all active:scale-90">
+<div class="relative">
+<span class="material-symbols-outlined text-2xl" data-icon="repeat">repeat</span>
+<span class="absolute -top-1 -right-1 w-1.5 h-1.5 bg-primary rounded-full"></span>
+</div>
+</button>
+<!-- Skip Previous -->
+<button class="text-on-surface hover:text-primary transition-all active:scale-90">
+<span class="material-symbols-outlined text-4xl" data-icon="skip_previous">skip_previous</span>
+</button>
+<!-- Play/Pause CTA -->
+<button class="w-20 h-20 rounded-full bg-gradient-to-br from-primary to-primary-container flex items-center justify-center text-on-primary-fixed shadow-[0_0_40px_rgba(129,236,255,0.3)] active:scale-95 transition-all">
+<span class="material-symbols-outlined text-4xl active-fill" data-icon="pause" style="font-variation-settings: 'FILL' 1;">pause</span>
+</button>
+<!-- Skip Next -->
+<button class="text-on-surface hover:text-primary transition-all active:scale-90">
+<span class="material-symbols-outlined text-4xl" data-icon="skip_next">skip_next</span>
+</button>
+<!-- More Vert -->
+<button class="text-on-surface-variant hover:text-primary transition-all active:scale-90">
+<span class="material-symbols-outlined text-2xl" data-icon="more_vert">more_vert</span>
+</button>
+</section>
+<!-- Repeat Modes Chips (Asymmetric Layout) -->
+<section class="w-full flex gap-3 overflow-x-auto pb-4 no-scrollbar">
+<div class="flex-shrink-0 px-4 py-2 bg-primary/10 border border-primary/20 rounded-full flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-sm active-fill" data-icon="repeat_one" style="font-variation-settings: 'FILL' 1;">repeat_one</span>
+<span class="text-[10px] uppercase tracking-widest font-bold text-primary">Single</span>
+</div>
+<div class="flex-shrink-0 px-4 py-2 bg-surface-container-highest rounded-full flex items-center gap-2 opacity-40">
+<span class="material-symbols-outlined text-on-surface-variant text-sm" data-icon="playlist_play">playlist_play</span>
+<span class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">List</span>
+</div>
+<div class="flex-shrink-0 px-4 py-2 bg-surface-container-highest rounded-full flex items-center gap-2 opacity-40">
+<span class="material-symbols-outlined text-on-surface-variant text-sm" data-icon="block">block</span>
+<span class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">None</span>
+</div>
+</section>
+</main>
+<!-- Bottom Navigation Bar -->
+<nav class="fixed bottom-0 left-0 w-full flex justify-around items-center px-4 pb-6 pt-3 bg-[#262626]/60 backdrop-blur-xl rounded-t-[32px] z-50 shadow-[0_-8px_24px_rgba(129,236,255,0.08)]">
+<a class="flex flex-col items-center justify-center text-[#adaaaa] px-5 py-1.5 hover:text-white transition-all active:scale-90 duration-300" href="#">
+<span class="material-symbols-outlined mb-1" data-icon="library_music">library_music</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest font-medium">Library</span>
+</a>
+<a class="flex flex-col items-center justify-center text-[#adaaaa] px-5 py-1.5 hover:text-white transition-all active:scale-90 duration-300" href="#">
+<span class="material-symbols-outlined mb-1" data-icon="playlist_play">playlist_play</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest font-medium">Playlists</span>
+</a>
+<!-- Active Tab: Player -->
+<a class="flex flex-col items-center justify-center bg-[#81ecff] text-[#003840] rounded-full px-5 py-1.5 active:scale-90 transition-transform duration-300" href="#">
+<span class="material-symbols-outlined mb-1 active-fill" data-icon="play_circle" style="font-variation-settings: 'FILL' 1;">play_circle</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest font-medium">Player</span>
+</a>
+<a class="flex flex-col items-center justify-center text-[#adaaaa] px-5 py-1.5 hover:text-white transition-all active:scale-90 duration-300" href="#">
+<span class="material-symbols-outlined mb-1" data-icon="settings">settings</span>
+<span class="font-['Inter'] text-[10px] uppercase tracking-widest font-medium">Settings</span>
+</a>
+</nav>
+<style>
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</body></html>
