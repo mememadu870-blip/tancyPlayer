@@ -89,6 +89,20 @@ jobs:
           p.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
+      - name: Normalize Gradle Java Home
+        working-directory: flutter_player
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("android/gradle.properties")
+          s = p.read_text(encoding="utf-8")
+          lines = [
+              line for line in s.splitlines()
+              if not line.strip().startswith("org.gradle.java.home=")
+          ]
+          p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
       - name: Build Release APK
         working-directory: flutter_player
         run: flutter build apk --release
