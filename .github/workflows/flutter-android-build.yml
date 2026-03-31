@@ -72,6 +72,23 @@ jobs:
               p.write_text(s, encoding="utf-8")
           PY
 
+      - name: Normalize Gradle Wrapper Distribution
+        working-directory: flutter_player
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("android/gradle/wrapper/gradle-wrapper.properties")
+          s = p.read_text(encoding="utf-8")
+          target = "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14-bin.zip"
+          lines = []
+          for line in s.splitlines():
+              if line.startswith("distributionUrl="):
+                  lines.append(target)
+              else:
+                  lines.append(line)
+          p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
       - name: Build Release APK
         working-directory: flutter_player
         run: flutter build apk --release
