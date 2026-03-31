@@ -1179,7 +1179,7 @@ class _TancyHomePageState extends State<TancyHomePage> {
       ..sort(_librarySortComparator);
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 180),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 200),
       children: [
         TextField(
           focusNode: _searchFocus,
@@ -1368,7 +1368,7 @@ class _TancyHomePageState extends State<TancyHomePage> {
 
   Widget _playlistsPage() {
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 180),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 200),
       children: [
         Container(
           padding: const EdgeInsets.all(20),
@@ -1473,7 +1473,7 @@ class _TancyHomePageState extends State<TancyHomePage> {
         store.position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 180),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 200),
       children: [
         Container(
           height: 360,
