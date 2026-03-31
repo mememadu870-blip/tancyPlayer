@@ -67,6 +67,14 @@ enum PlaylistSongSort {
   createdTime,
 }
 
+enum LibrarySongSort {
+  name,
+  artist,
+  size,
+  duration,
+  dateAdded,
+}
+
 class _HashCacheEntry {
   final int size;
   final int modifiedMs;
@@ -993,6 +1001,7 @@ class _TancyHomePageState extends State<TancyHomePage> {
   int tab = 2;
   String search = '';
   double _minDurationPreview = -1;
+  LibrarySongSort _librarySort = LibrarySongSort.name;
 
   @override
   void initState() {
@@ -1166,7 +1175,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
       return s.title.toLowerCase().contains(key) ||
           (s.artist ?? '').toLowerCase().contains(key) ||
           (s.album ?? '').toLowerCase().contains(key);
-    }).toList(growable: false);
+    }).toList(growable: true)
+      ..sort(_librarySortComparator);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 180),
@@ -1227,22 +1237,133 @@ class _TancyHomePageState extends State<TancyHomePage> {
           ),
         ),
         const SizedBox(height: 18),
-        Text('Songs',
-            style: GoogleFonts.spaceGrotesk(
-                fontSize: 30, fontWeight: FontWeight.w700)),
+        Row(
+          children: [
+            Text('Songs',
+                style: GoogleFonts.spaceGrotesk(
+                    fontSize: 30, fontWeight: FontWeight.w700)),
+            const Spacer(),
+            _sortDropdown(),
+          ],
+        ),
         const SizedBox(height: 8),
         if (filtered.isEmpty)
           _glassCard(
             child: Text(
               search.trim().isEmpty
                   ? '没有可显示的歌曲，点击 Rescan 扫描本地音频。'
-                  : '没有匹配 “$search” 的结果。',
+                  : '没有匹配 "$search" 的结果。',
               style: const TextStyle(color: TancyColors.textDim),
             ),
           ),
         for (final s in filtered) _songTile(s),
       ],
     );
+  }
+
+  Widget _sortDropdown() {
+    return PopupMenuButton<LibrarySongSort>(
+      initialValue: _librarySort,
+      onSelected: (value) => setState(() => _librarySort = value),
+      icon: const Icon(Icons.sort_rounded, color: TancyColors.primary),
+      tooltip: '排序方式',
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: LibrarySongSort.name,
+          child: Row(
+            children: [
+              Icon(Icons.text_fields_rounded, size: 20),
+              SizedBox(width: 8),
+              Text('按名称'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: LibrarySongSort.artist,
+          child: Row(
+            children: [
+              Icon(Icons.person_rounded, size: 20),
+              SizedBox(width: 8),
+              Text('按艺术家'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: LibrarySongSort.size,
+          child: Row(
+            children: [
+              Icon(Icons.sd_card_rounded, size: 20),
+              SizedBox(width: 8),
+              Text('按大小'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: LibrarySongSort.duration,
+          child: Row(
+            children: [
+              Icon(Icons.timer_rounded, size: 20),
+              SizedBox(width: 8),
+              Text('按时长'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: LibrarySongSort.dateAdded,
+          child: Row(
+            children: [
+              Icon(Icons.schedule_rounded, size: 20),
+              SizedBox(width: 8),
+              Text('按添加时间'),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  int _librarySortComparator(SongModel a, SongModel b) {
+    switch (_librarySort) {
+      case LibrarySongSort.name:
+        return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      case LibrarySongSort.artist:
+        final aArtist = a.artist?.toLowerCase() ?? '';
+        final bArtist = b.artist?.toLowerCase() ?? '';
+        final cmp = aArtist.compareTo(bArtist);
+        return cmp != 0 ? cmp : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      case LibrarySongSort.size:
+        final aSize = _fileSizeOf(a);
+        final bSize = _fileSizeOf(b);
+        final cmp = bSize.compareTo(aSize); // 大文件优先
+        return cmp != 0 ? cmp : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      case LibrarySongSort.duration:
+        final aDur = a.duration ?? 0;
+        final bDur = b.duration ?? 0;
+        final cmp = bDur.compareTo(aDur); // 长歌优先
+        return cmp != 0 ? cmp : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      case LibrarySongSort.dateAdded:
+        // dateAdded 在 SongModel 中可能没有，用文件修改时间代替
+        final aTime = _fileTimeOf(a);
+        final bTime = _fileTimeOf(b);
+        final cmp = bTime.compareTo(aTime); // 新歌优先
+        return cmp != 0 ? cmp : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    }
+  }
+
+  int _fileSizeOf(SongModel song) {
+    try {
+      return File(song.data).statSync().size;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  int _fileTimeOf(SongModel song) {
+    try {
+      return File(song.data).statSync().modified.millisecondsSinceEpoch;
+    } catch (_) {
+      return 0;
+    }
   }
 
   Widget _playlistsPage() {
