@@ -29,7 +29,7 @@ jobs:
         working-directory: flutter_player
         run: |
           flutter create --platforms=android --org com.tancy.player .
-          git checkout -- pubspec.yaml lib
+          git checkout -- pubspec.yaml lib android
           flutter pub get
 
       - name: Add Android Permissions

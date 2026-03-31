@@ -61,6 +61,59 @@ class DuplicateGroup {
   const DuplicateGroup({required this.hash, required this.songs});
 }
 
+class _HashCacheEntry {
+  final int size;
+  final int modifiedMs;
+  final String hash;
+
+  const _HashCacheEntry({
+    required this.size,
+    required this.modifiedMs,
+    required this.hash,
+  });
+
+  Map<String, Object> toJson() => {
+        'size': size,
+        'modifiedMs': modifiedMs,
+        'hash': hash,
+      };
+
+  static _HashCacheEntry? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final size = raw['size'];
+    final modifiedMs = raw['modifiedMs'];
+    final hash = raw['hash'];
+    if (size is! int || modifiedMs is! int || hash is! String) return null;
+    return _HashCacheEntry(size: size, modifiedMs: modifiedMs, hash: hash);
+  }
+}
+
+class SongDetails {
+  final SongModel song;
+  final bool exists;
+  final int size;
+  final String path;
+  final String fileName;
+  final String format;
+  final String hash;
+  final String quality;
+  final String estimatedBitrate;
+  final DateTime? modifiedAt;
+
+  const SongDetails({
+    required this.song,
+    required this.exists,
+    required this.size,
+    required this.path,
+    required this.fileName,
+    required this.format,
+    required this.hash,
+    required this.quality,
+    required this.estimatedBitrate,
+    required this.modifiedAt,
+  });
+}
+
 class PlayerStore extends ChangeNotifier {
   static const _kFavorites = 'favorites';
   static const _kPlaylists = 'playlists';
@@ -69,6 +122,7 @@ class PlayerStore extends ChangeNotifier {
   static const _kTimerMinutes = 'timer_minutes';
   static const _kStopAfterSong = 'stop_after_song';
   static const _kMinDurationSec = 'min_duration_sec';
+  static const _kHashCache = 'hash_cache_v2';
 
   final OnAudioQuery _audioQuery = OnAudioQuery();
   final AudioPlayer _player = AudioPlayer();
@@ -99,6 +153,21 @@ class PlayerStore extends ChangeNotifier {
   StreamSubscription<PlayerState>? _stateSub;
   SharedPreferences? _prefs;
   bool _manualIndexChange = false;
+  final Map<String, _HashCacheEntry> _hashCache = <String, _HashCacheEntry>{};
+  String? _externalTitle;
+  String? _externalSubtitle;
+
+  String get currentTitle {
+    final song = currentSong;
+    if (song != null && song.title.isNotEmpty) return song.title;
+    return _externalTitle ?? '未选择歌曲';
+  }
+
+  String get currentArtist {
+    final song = currentSong;
+    if (song?.artist?.isNotEmpty == true) return song!.artist!;
+    return _externalSubtitle ?? 'Unknown Artist';
+  }
 
   SongModel? get currentSong {
     if (currentSongId == null) return null;
@@ -130,6 +199,7 @@ class PlayerStore extends ChangeNotifier {
     timerMinutes = _prefs?.getInt(_kTimerMinutes) ?? 30;
     stopAfterCurrentSong = _prefs?.getBool(_kStopAfterSong) ?? false;
     minDurationSeconds = _prefs?.getInt(_kMinDurationSec) ?? 30;
+    _loadHashCache();
 
     await _preparePlayerStreams();
     await scanSongs();
@@ -158,7 +228,8 @@ class PlayerStore extends ChangeNotifier {
       notifyListeners();
     });
     _stateSub = _player.playerStateStream.listen((state) async {
-      if (state.processingState == ProcessingState.completed && stopAfterCurrentSong) {
+      if (state.processingState == ProcessingState.completed &&
+          stopAfterCurrentSong) {
         await _player.pause();
         timerEnabled = false;
         _sleepTimer?.cancel();
@@ -192,19 +263,10 @@ class PlayerStore extends ChangeNotifier {
     songs = queried.where((s) {
       final d = s.duration ?? 0;
       return d >= minDurationSeconds * 1000;
-    }).toList(growable: false);
+    }).toList(growable: true);
 
-    final sources = songs
-        .map((s) => AudioSource.uri(Uri.parse('content://media/external/audio/media/${s.id}')))
-        .toList(growable: false);
-
-    if (sources.isNotEmpty) {
-      await _player.setAudioSources(sources);
-      currentSongId ??= songs.first.id;
-    } else {
-      await _player.stop();
-      currentSongId = null;
-    }
+    await _resetAudioSources(
+        keepSongId: currentSongId, keepPosition: Duration.zero);
 
     loading = false;
     notifyListeners();
@@ -217,6 +279,8 @@ class PlayerStore extends ChangeNotifier {
     await _player.seek(Duration.zero, index: idx);
     await _player.play();
     currentSongId = songId;
+    _externalTitle = null;
+    _externalSubtitle = null;
     notifyListeners();
   }
 
@@ -257,7 +321,8 @@ class PlayerStore extends ChangeNotifier {
     } else {
       favorites.add(songId);
     }
-    await _prefs?.setStringList(_kFavorites, favorites.map((e) => e.toString()).toList());
+    await _prefs?.setStringList(
+        _kFavorites, favorites.map((e) => e.toString()).toList());
     notifyListeners();
   }
 
@@ -281,7 +346,10 @@ class PlayerStore extends ChangeNotifier {
   List<SongModel> playlistSongs(String name) {
     final ids = playlists[name] ?? const <int>[];
     final byId = <int, SongModel>{for (final s in songs) s.id: s};
-    return ids.map((id) => byId[id]).whereType<SongModel>().toList(growable: false);
+    return ids
+        .map((id) => byId[id])
+        .whereType<SongModel>()
+        .toList(growable: false);
   }
 
   Future<void> removeFromPlaylist(String name, int songId) async {
@@ -316,8 +384,8 @@ class PlayerStore extends ChangeNotifier {
     await _prefs?.setInt(_kTimerMinutes, timerMinutes);
     if (timerEnabled) {
       _applySleepTimer();
-      notifyListeners();
     }
+    notifyListeners();
   }
 
   Future<void> setStopAfterCurrentSong(bool enabled) async {
@@ -332,8 +400,121 @@ class PlayerStore extends ChangeNotifier {
     await scanSongs();
   }
 
+  Future<void> queueNext(int songId) async {
+    final currentIdx = songs.indexWhere((s) => s.id == currentSongId);
+    final targetIdx = songs.indexWhere((s) => s.id == songId);
+    if (targetIdx < 0) return;
+    if (currentIdx < 0) {
+      await playById(songId);
+      return;
+    }
+    final song = songs[targetIdx];
+    songs.removeAt(targetIdx);
+    var insertAt = currentIdx + 1;
+    if (targetIdx < insertAt) {
+      insertAt -= 1;
+    }
+    if (insertAt < 0) insertAt = 0;
+    if (insertAt > songs.length) insertAt = songs.length;
+    songs.insert(insertAt, song);
+    final wasPlaying = _player.playing;
+    await _resetAudioSources(
+      keepSongId: currentSongId,
+      keepPosition: position,
+      playAfter: wasPlaying,
+    );
+    notifyListeners();
+  }
+
+  Future<bool> playUri(String rawUri) async {
+    final uri = Uri.tryParse(rawUri);
+    if (uri == null) return false;
+    final matchedSong = _matchSongByUri(uri);
+    if (matchedSong != null) {
+      await playById(matchedSong.id);
+      return true;
+    }
+    try {
+      await _player.setAudioSource(AudioSource.uri(uri));
+      await _player.play();
+      currentSongId = null;
+      _externalTitle = _titleFromUri(uri);
+      _externalSubtitle = 'Opened from Android';
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> deleteSong(SongModel song) async {
+    final path = song.data;
+    if (path.isEmpty) return false;
+    final file = File(path);
+    if (!await file.exists()) return false;
+    try {
+      await file.delete();
+      final deleted = !await file.exists();
+      if (!deleted) return false;
+      favorites.remove(song.id);
+      for (final entry in playlists.entries) {
+        entry.value.remove(song.id);
+      }
+      _hashCache.remove(path);
+      await _prefs?.setStringList(
+          _kFavorites, favorites.map((e) => e.toString()).toList());
+      await _persistPlaylists();
+      if (currentSongId == song.id) {
+        await _player.stop();
+        currentSongId = null;
+        _externalTitle = null;
+        _externalSubtitle = null;
+      }
+      await scanSongs();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _persistPlaylists() async {
     await _prefs?.setString(_kPlaylists, jsonEncode(playlists));
+  }
+
+  Future<void> _resetAudioSources({
+    int? keepSongId,
+    Duration keepPosition = Duration.zero,
+    bool playAfter = false,
+  }) async {
+    final sources = songs
+        .map((s) => AudioSource.uri(
+            Uri.parse('content://media/external/audio/media/${s.id}')))
+        .toList(growable: false);
+    if (sources.isEmpty) {
+      await _player.stop();
+      currentSongId = null;
+      _externalTitle = null;
+      _externalSubtitle = null;
+      return;
+    }
+    var initialIndex = 0;
+    if (keepSongId != null) {
+      final matchedIndex = songs.indexWhere((s) => s.id == keepSongId);
+      if (matchedIndex >= 0) {
+        initialIndex = matchedIndex;
+      }
+    }
+    await _player.setAudioSources(
+      sources,
+      initialIndex: initialIndex,
+      initialPosition: keepPosition,
+    );
+    currentSongId = songs[initialIndex].id;
+    _externalTitle = null;
+    _externalSubtitle = null;
+    if (playAfter) {
+      await _player.play();
+    }
   }
 
   void startSleepTimer(int minutes) {
@@ -382,14 +563,60 @@ class PlayerStore extends ChangeNotifier {
     duplicateGroups = [];
     notifyListeners();
 
-    final grouped = <String, List<SongModel>>{};
+    final candidates =
+        <({SongModel song, File file, int size, int modifiedMs})>[];
     for (final s in songs) {
       final path = s.data;
       if (path.isEmpty) continue;
       final file = File(path);
-      if (!await file.exists()) continue;
-      final hash = await _sha256File(file);
-      grouped.putIfAbsent(hash, () => <SongModel>[]).add(s);
+      final stat = await file.stat();
+      if (stat.type != FileSystemEntityType.file) continue;
+      candidates.add((
+        song: s,
+        file: file,
+        size: stat.size,
+        modifiedMs: stat.modified.millisecondsSinceEpoch,
+      ));
+    }
+
+    final sizeGroups =
+        <int, List<({SongModel song, File file, int size, int modifiedMs})>>{};
+    for (final item in candidates) {
+      sizeGroups
+          .putIfAbsent(item.size,
+              () => <({SongModel song, File file, int size, int modifiedMs})>[])
+          .add(item);
+    }
+
+    final grouped = <String, List<SongModel>>{};
+    for (final sizeGroup
+        in sizeGroups.values.where((group) => group.length > 1)) {
+      final sampleGroups = <String,
+          List<({SongModel song, File file, int size, int modifiedMs})>>{};
+      for (final item in sizeGroup) {
+        final signature = await _quickFileSignature(
+          item.file,
+          size: item.size,
+          modifiedMs: item.modifiedMs,
+        );
+        sampleGroups
+            .putIfAbsent(
+                signature,
+                () =>
+                    <({SongModel song, File file, int size, int modifiedMs})>[])
+            .add(item);
+      }
+      for (final sampleGroup
+          in sampleGroups.values.where((group) => group.length > 1)) {
+        for (final item in sampleGroup) {
+          final hash = await _sha256File(
+            item.file,
+            size: item.size,
+            modifiedMs: item.modifiedMs,
+          );
+          grouped.putIfAbsent(hash, () => <SongModel>[]).add(item.song);
+        }
+      }
     }
 
     duplicateGroups = grouped.entries
@@ -398,29 +625,161 @@ class PlayerStore extends ChangeNotifier {
         .toList()
       ..sort((a, b) => b.songs.length.compareTo(a.songs.length));
 
+    await _persistHashCache();
     duplicateScanning = false;
     notifyListeners();
   }
 
-  Future<String> _sha256File(File file) async {
+  Future<String> _sha256File(
+    File file, {
+    required int size,
+    required int modifiedMs,
+  }) async {
+    final cached = _hashCache[file.path];
+    if (cached != null &&
+        cached.size == size &&
+        cached.modifiedMs == modifiedMs) {
+      return cached.hash;
+    }
     final digest = await sha256.bind(file.openRead()).first;
-    return digest.toString();
+    final hash = digest.toString();
+    _hashCache[file.path] = _HashCacheEntry(
+      size: size,
+      modifiedMs: modifiedMs,
+      hash: hash,
+    );
+    return hash;
   }
 
-  Future<Map<String, String>> buildSongDetails(SongModel song) async {
+  Future<String> _quickFileSignature(
+    File file, {
+    required int size,
+    required int modifiedMs,
+  }) async {
+    final raf = await file.open();
+    try {
+      const chunkSize = 64 * 1024;
+      final head = await raf.read(size < chunkSize ? size : chunkSize);
+      List<int> tail = const <int>[];
+      if (size > chunkSize) {
+        await raf.setPosition(size > chunkSize ? size - chunkSize : 0);
+        tail = await raf.read(size < chunkSize ? size : chunkSize);
+      }
+      final sampled = <int>[
+        ...utf8.encode('$size:$modifiedMs:'),
+        ...head,
+        ...tail,
+      ];
+      return md5.convert(sampled).toString();
+    } finally {
+      await raf.close();
+    }
+  }
+
+  Future<SongDetails> buildSongDetails(SongModel song) async {
     final file = File(song.data);
-    final exists = await file.exists();
-    final size = exists ? await file.length() : 0;
-    final hash = exists ? await _sha256File(file) : 'N/A';
-    return {
-      '标题': song.title,
-      '歌手': song.artist ?? 'Unknown Artist',
-      '专辑': song.album ?? 'Unknown Album',
-      '时长': '${((song.duration ?? 0) / 1000).toStringAsFixed(1)}s',
-      '大小': exists ? '${(size / 1024 / 1024).toStringAsFixed(2)} MB' : 'N/A',
-      '路径': song.data,
-      'Hash': hash,
-    };
+    final stat = await file.stat();
+    final exists = stat.type == FileSystemEntityType.file;
+    final size = exists ? stat.size : 0;
+    final hash = exists
+        ? await _sha256File(
+            file,
+            size: stat.size,
+            modifiedMs: stat.modified.millisecondsSinceEpoch,
+          )
+        : 'N/A';
+    await _persistHashCache();
+    final bitrate = _estimateBitrate(size, song.duration ?? 0);
+    return SongDetails(
+      song: song,
+      exists: exists,
+      size: size,
+      path: song.data,
+      fileName: _titleFromPath(song.data),
+      format: _fileExtension(song.data).toUpperCase(),
+      hash: hash,
+      quality: _qualityLabel(bitrate),
+      estimatedBitrate:
+          bitrate <= 0 ? 'N/A' : '${bitrate.toStringAsFixed(0)} kbps',
+      modifiedAt: exists ? stat.modified : null,
+    );
+  }
+
+  void _loadHashCache() {
+    final raw = _prefs?.getString(_kHashCache);
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return;
+      _hashCache
+        ..clear()
+        ..addEntries(
+          decoded.entries
+              .map((entry) =>
+                  MapEntry(entry.key, _HashCacheEntry.fromJson(entry.value)))
+              .where((entry) => entry.value != null)
+              .map((entry) => MapEntry(entry.key, entry.value!)),
+        );
+    } catch (_) {
+      _hashCache.clear();
+    }
+  }
+
+  Future<void> _persistHashCache() async {
+    await _prefs?.setString(
+      _kHashCache,
+      jsonEncode(_hashCache.map((key, value) => MapEntry(key, value.toJson()))),
+    );
+  }
+
+  SongModel? _matchSongByUri(Uri uri) {
+    final id =
+        int.tryParse(uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '');
+    if (id != null) {
+      for (final song in songs) {
+        if (song.id == id) return song;
+      }
+    }
+    final normalized = uri.toString().toLowerCase();
+    for (final song in songs) {
+      if (song.data.toLowerCase() == normalized) return song;
+      if (song.data
+          .toLowerCase()
+          .endsWith(Uri.decodeComponent(uri.path).toLowerCase())) {
+        return song;
+      }
+    }
+    return null;
+  }
+
+  String _titleFromUri(Uri uri) => _titleFromPath(Uri.decodeComponent(
+      uri.pathSegments.isNotEmpty ? uri.pathSegments.last : uri.toString()));
+
+  String _titleFromPath(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    if (!normalized.contains('/')) return normalized;
+    return normalized.split('/').last;
+  }
+
+  String _fileExtension(String path) {
+    final fileName = _titleFromPath(path);
+    final dot = fileName.lastIndexOf('.');
+    if (dot < 0 || dot == fileName.length - 1) return '';
+    return fileName.substring(dot + 1);
+  }
+
+  double _estimateBitrate(int sizeBytes, int durationMs) {
+    if (sizeBytes <= 0 || durationMs <= 0) return 0;
+    return (sizeBytes * 8) / durationMs;
+  }
+
+  String _qualityLabel(double bitrateKbps) {
+    if (bitrateKbps <= 0) return 'Unknown';
+    if (bitrateKbps >= 900) return 'Lossless / Hi-Res';
+    if (bitrateKbps >= 320) return 'Very High';
+    if (bitrateKbps >= 192) return 'High';
+    if (bitrateKbps >= 128) return 'Standard';
+    return 'Low';
   }
 
   @override
@@ -443,6 +802,7 @@ class TancyHomePage extends StatefulWidget {
 }
 
 class _TancyHomePageState extends State<TancyHomePage> {
+  static const MethodChannel _platform = MethodChannel('tancy_player/system');
   final PlayerStore store = PlayerStore();
   final FocusNode _searchFocus = FocusNode();
   int tab = 2;
@@ -452,7 +812,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
   @override
   void initState() {
     super.initState();
-    store.init();
+    _wirePlatformChannel();
+    store.init().then((_) => _loadInitialAudioIntent());
     store.addListener(_onStore);
   }
 
@@ -460,10 +821,41 @@ class _TancyHomePageState extends State<TancyHomePage> {
 
   @override
   void dispose() {
+    _platform.setMethodCallHandler(null);
     _searchFocus.dispose();
     store.removeListener(_onStore);
     store.dispose();
     super.dispose();
+  }
+
+  void _wirePlatformChannel() {
+    _platform.setMethodCallHandler((call) async {
+      if (call.method == 'audioIntent' && call.arguments is String) {
+        await _handleIncomingAudio(call.arguments as String);
+      }
+      return null;
+    });
+  }
+
+  Future<void> _loadInitialAudioIntent() async {
+    try {
+      final uri = await _platform.invokeMethod<String>('getInitialAudioUri');
+      if (uri == null || uri.isEmpty) return;
+      await _handleIncomingAudio(uri);
+    } catch (_) {
+      // Ignore platform channel errors and keep app usable.
+    }
+  }
+
+  Future<void> _handleIncomingAudio(String uri) async {
+    final opened = await store.playUri(uri);
+    if (!mounted) return;
+    if (opened) {
+      setState(() => tab = 2);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已打开来自系统的音频文件')),
+      );
+    }
   }
 
   @override
@@ -471,7 +863,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
     return Scaffold(
       body: Stack(
         children: [
-          const Positioned(top: 50, left: -100, right: -100, child: _AmbientGlow()),
+          const Positioned(
+              top: 50, left: -100, right: -100, child: _AmbientGlow()),
           SafeArea(
             child: Column(
               children: [
@@ -492,7 +885,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 color: Colors.black54,
                 child: Center(
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 18, vertical: 14),
                     decoration: BoxDecoration(
                       color: TancyColors.surface,
                       borderRadius: BorderRadius.circular(14),
@@ -500,7 +894,10 @@ class _TancyHomePageState extends State<TancyHomePage> {
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
                         SizedBox(width: 12),
                         Text('正在计算音频 Hash...'),
                       ],
@@ -597,7 +994,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
             hintStyle: const TextStyle(color: TancyColors.textDim),
             filled: true,
             fillColor: TancyColors.surfaceHigh,
-            prefixIcon: const Icon(Icons.search_rounded, color: TancyColors.textDim),
+            prefixIcon:
+                const Icon(Icons.search_rounded, color: TancyColors.textDim),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: BorderSide.none,
@@ -611,13 +1009,18 @@ class _TancyHomePageState extends State<TancyHomePage> {
             children: [
               Row(
                 children: [
-                  Text('System Sync', style: GoogleFonts.spaceGrotesk(color: TancyColors.primary, fontWeight: FontWeight.w700)),
+                  Text('System Sync',
+                      style: GoogleFonts.spaceGrotesk(
+                          color: TancyColors.primary,
+                          fontWeight: FontWeight.w700)),
                   const Spacer(),
-                  Text('${store.songs.length} tracks', style: const TextStyle(color: TancyColors.textDim)),
+                  Text('${store.songs.length} tracks',
+                      style: const TextStyle(color: TancyColors.textDim)),
                 ],
               ),
               const SizedBox(height: 8),
-              const Text('Scanning local storage...', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              const Text('Scanning local storage...',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
               const SizedBox(height: 10),
               LinearProgressIndicator(
                 value: store.loading ? null : 1,
@@ -631,19 +1034,24 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 spacing: 8,
                 children: [
                   _chipBtn('Rescan', Icons.refresh_rounded, store.scanSongs),
-                  _chipBtn('Hash查重', Icons.fingerprint_rounded, _runDuplicateScan),
+                  _chipBtn(
+                      'Hash查重', Icons.fingerprint_rounded, _runDuplicateScan),
                 ],
               ),
             ],
           ),
         ),
         const SizedBox(height: 18),
-        Text('Songs', style: GoogleFonts.spaceGrotesk(fontSize: 30, fontWeight: FontWeight.w700)),
+        Text('Songs',
+            style: GoogleFonts.spaceGrotesk(
+                fontSize: 30, fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
         if (filtered.isEmpty)
           _glassCard(
             child: Text(
-              search.trim().isEmpty ? '没有可显示的歌曲，点击 Rescan 扫描本地音频。' : '没有匹配 “$search” 的结果。',
+              search.trim().isEmpty
+                  ? '没有可显示的歌曲，点击 Rescan 扫描本地音频。'
+                  : '没有匹配 “$search” 的结果。',
               style: const TextStyle(color: TancyColors.textDim),
             ),
           ),
@@ -660,33 +1068,50 @@ class _TancyHomePageState extends State<TancyHomePage> {
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(28),
-            gradient: const LinearGradient(colors: [Color(0x45FF734A), Color(0x1000E3FD)]),
+            gradient: const LinearGradient(
+                colors: [Color(0x45FF734A), Color(0x1000E3FD)]),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(children: [Icon(Icons.favorite_rounded, color: TancyColors.secondary), SizedBox(width: 8), Text('Curated for you', style: TextStyle(color: TancyColors.textDim))]),
+              const Row(children: [
+                Icon(Icons.favorite_rounded, color: TancyColors.secondary),
+                SizedBox(width: 8),
+                Text('Curated for you',
+                    style: TextStyle(color: TancyColors.textDim))
+              ]),
               const SizedBox(height: 8),
-              Text('Favorites', style: GoogleFonts.spaceGrotesk(fontSize: 44, fontWeight: FontWeight.w700, fontStyle: FontStyle.italic)),
-              Text('${store.favorites.length} Tracks', style: const TextStyle(color: TancyColors.textDim)),
+              Text('Favorites',
+                  style: GoogleFonts.spaceGrotesk(
+                      fontSize: 44,
+                      fontWeight: FontWeight.w700,
+                      fontStyle: FontStyle.italic)),
+              Text('${store.favorites.length} Tracks',
+                  style: const TextStyle(color: TancyColors.textDim)),
             ],
           ),
         ),
         const SizedBox(height: 22),
         Row(
           children: [
-            Text('Your Playlists', style: GoogleFonts.spaceGrotesk(fontSize: 30, fontWeight: FontWeight.w700)),
+            Text('Your Playlists',
+                style: GoogleFonts.spaceGrotesk(
+                    fontSize: 30, fontWeight: FontWeight.w700)),
             const Spacer(),
             FilledButton.icon(
               onPressed: _createPlaylistDialog,
-              style: FilledButton.styleFrom(backgroundColor: TancyColors.surfaceHigh),
+              style: FilledButton.styleFrom(
+                  backgroundColor: TancyColors.surfaceHigh),
               icon: const Icon(Icons.add_rounded, color: TancyColors.primary),
               label: const Text('Create New'),
             ),
           ],
         ),
         const SizedBox(height: 10),
-        if (store.playlists.isEmpty) _glassCard(child: const Text('还没有歌单，点击 Create New 创建。', style: TextStyle(color: TancyColors.textDim))),
+        if (store.playlists.isEmpty)
+          _glassCard(
+              child: const Text('还没有歌单，点击 Create New 创建。',
+                  style: TextStyle(color: TancyColors.textDim))),
         ...store.playlists.entries.map((e) => Container(
               margin: const EdgeInsets.only(bottom: 12),
               child: InkWell(
@@ -698,7 +1123,9 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 onLongPress: () => _confirmDeletePlaylist(e.key),
                 child: Container(
                   padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(color: TancyColors.surfaceLow, borderRadius: BorderRadius.circular(18)),
+                  decoration: BoxDecoration(
+                      color: TancyColors.surfaceLow,
+                      borderRadius: BorderRadius.circular(18)),
                   child: Row(
                     children: [
                       Container(
@@ -706,13 +1133,19 @@ class _TancyHomePageState extends State<TancyHomePage> {
                         height: 56,
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(12),
-                          gradient: const LinearGradient(colors: [Color(0xFF1B2836), Color(0xFF213E57)]),
+                          gradient: const LinearGradient(
+                              colors: [Color(0xFF1B2836), Color(0xFF213E57)]),
                         ),
-                        child: const Icon(Icons.playlist_play_rounded, color: TancyColors.primary),
+                        child: const Icon(Icons.playlist_play_rounded,
+                            color: TancyColors.primary),
                       ),
                       const SizedBox(width: 12),
-                      Expanded(child: Text(e.key, style: GoogleFonts.spaceGrotesk(fontSize: 21, fontWeight: FontWeight.w700))),
-                      Text('${e.value.length} songs', style: const TextStyle(color: TancyColors.textDim)),
+                      Expanded(
+                          child: Text(e.key,
+                              style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 21, fontWeight: FontWeight.w700))),
+                      Text('${e.value.length} songs',
+                          style: const TextStyle(color: TancyColors.textDim)),
                     ],
                   ),
                 ),
@@ -724,10 +1157,14 @@ class _TancyHomePageState extends State<TancyHomePage> {
 
   Widget _playerPage() {
     final song = store.currentSong;
-    final title = (song?.title.isNotEmpty == true) ? song!.title : '未选择歌曲';
-    final artist = (song?.artist?.isNotEmpty == true) ? song!.artist! : 'Unknown Artist';
-    final max = store.duration.inMilliseconds.toDouble().clamp(1.0, (1 << 30).toDouble()).toDouble();
-    final value = store.position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
+    final title = store.currentTitle;
+    final artist = store.currentArtist;
+    final max = store.duration.inMilliseconds
+        .toDouble()
+        .clamp(1.0, (1 << 30).toDouble())
+        .toDouble();
+    final value =
+        store.position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
@@ -736,11 +1173,17 @@ class _TancyHomePageState extends State<TancyHomePage> {
           height: 360,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(40),
-            gradient: const LinearGradient(colors: [Color(0xFF203245), Color(0xFF111B29), Color(0xFF0E3842)]),
+            gradient: const LinearGradient(colors: [
+              Color(0xFF203245),
+              Color(0xFF111B29),
+              Color(0xFF0E3842)
+            ]),
           ),
           child: Stack(
             children: [
-              const Center(child: Icon(Icons.album_rounded, size: 110, color: Colors.white70)),
+              const Center(
+                  child: Icon(Icons.album_rounded,
+                      size: 110, color: Colors.white70)),
               Positioned(
                 left: 16,
                 right: 16,
@@ -748,10 +1191,14 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 child: _glassCard(
                   child: Row(
                     children: [
-                      const Icon(Icons.equalizer_rounded, color: TancyColors.primary),
+                      const Icon(Icons.equalizer_rounded,
+                          color: TancyColors.primary),
                       const SizedBox(width: 8),
-                      const Expanded(child: Text('Currently Playing', style: TextStyle(color: TancyColors.textDim))),
-                      Text(store.isPlaying ? 'LIVE' : 'PAUSED', style: const TextStyle(color: TancyColors.primary)),
+                      const Expanded(
+                          child: Text('Currently Playing',
+                              style: TextStyle(color: TancyColors.textDim))),
+                      Text(store.isPlaying ? 'LIVE' : 'PAUSED',
+                          style: const TextStyle(color: TancyColors.primary)),
                     ],
                   ),
                 ),
@@ -768,16 +1215,24 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 children: [
                   AutoMarqueeText(
                     text: title,
-                    style: GoogleFonts.spaceGrotesk(fontSize: 34, fontWeight: FontWeight.w700),
+                    style: GoogleFonts.spaceGrotesk(
+                        fontSize: 34, fontWeight: FontWeight.w700),
                   ),
-                  Text(artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: TancyColors.textDim, fontSize: 18)),
+                  Text(artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: TancyColors.textDim, fontSize: 18)),
                 ],
               ),
             ),
             IconButton(
-              onPressed: song == null ? null : () => store.toggleFavorite(song.id),
+              onPressed:
+                  song == null ? null : () => store.toggleFavorite(song.id),
               icon: Icon(
-                song != null && store.favorites.contains(song.id) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                song != null && store.favorites.contains(song.id)
+                    ? Icons.favorite_rounded
+                    : Icons.favorite_border_rounded,
                 color: TancyColors.secondary,
               ),
             ),
@@ -791,9 +1246,11 @@ class _TancyHomePageState extends State<TancyHomePage> {
         ),
         Row(
           children: [
-            Text(_fmt(store.position), style: const TextStyle(color: TancyColors.textDim)),
+            Text(_fmt(store.position),
+                style: const TextStyle(color: TancyColors.textDim)),
             const Spacer(),
-            Text(_fmt(store.duration), style: const TextStyle(color: TancyColors.textDim)),
+            Text(_fmt(store.duration),
+                style: const TextStyle(color: TancyColors.textDim)),
           ],
         ),
         const SizedBox(height: 14),
@@ -808,9 +1265,17 @@ class _TancyHomePageState extends State<TancyHomePage> {
                         ? LoopMode.all
                         : LoopMode.one,
               ),
-              icon: Icon(store.loopMode == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded, color: store.loopMode == LoopMode.off ? TancyColors.textDim : TancyColors.primary),
+              icon: Icon(
+                  store.loopMode == LoopMode.one
+                      ? Icons.repeat_one_rounded
+                      : Icons.repeat_rounded,
+                  color: store.loopMode == LoopMode.off
+                      ? TancyColors.textDim
+                      : TancyColors.primary),
             ),
-            IconButton(onPressed: store.previous, icon: const Icon(Icons.skip_previous_rounded, size: 44)),
+            IconButton(
+                onPressed: store.previous,
+                icon: const Icon(Icons.skip_previous_rounded, size: 44)),
             GestureDetector(
               onTap: store.togglePlayPause,
               child: Container(
@@ -818,13 +1283,24 @@ class _TancyHomePageState extends State<TancyHomePage> {
                 height: 86,
                 decoration: const BoxDecoration(
                   shape: BoxShape.circle,
-                  gradient: LinearGradient(colors: [TancyColors.primary, TancyColors.primary2]),
+                  gradient: LinearGradient(
+                      colors: [TancyColors.primary, TancyColors.primary2]),
                 ),
-                child: Icon(store.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded, color: const Color(0xFF003840), size: 44),
+                child: Icon(
+                    store.isPlaying
+                        ? Icons.pause_rounded
+                        : Icons.play_arrow_rounded,
+                    color: const Color(0xFF003840),
+                    size: 44),
               ),
             ),
-            IconButton(onPressed: store.next, icon: const Icon(Icons.skip_next_rounded, size: 44)),
-            IconButton(onPressed: _runDuplicateScan, icon: const Icon(Icons.more_vert_rounded, color: TancyColors.textDim)),
+            IconButton(
+                onPressed: store.next,
+                icon: const Icon(Icons.skip_next_rounded, size: 44)),
+            IconButton(
+                onPressed: _runDuplicateScan,
+                icon: const Icon(Icons.more_vert_rounded,
+                    color: TancyColors.textDim)),
           ],
         ),
       ],
@@ -835,8 +1311,11 @@ class _TancyHomePageState extends State<TancyHomePage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
       children: [
-        Text('Settings', style: GoogleFonts.spaceGrotesk(fontSize: 52, fontWeight: FontWeight.w700)),
-        const Text('Fine-tune your auditory environment.', style: TextStyle(color: TancyColors.textDim)),
+        Text('Settings',
+            style: GoogleFonts.spaceGrotesk(
+                fontSize: 52, fontWeight: FontWeight.w700)),
+        const Text('Fine-tune your auditory environment.',
+            style: TextStyle(color: TancyColors.textDim)),
         const SizedBox(height: 20),
         _glassCard(
           child: Column(
@@ -864,7 +1343,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
                   const Text('180 分钟'),
                 ],
               ),
-              Text('当前：${store.timerMinutes} 分钟', style: const TextStyle(color: TancyColors.textDim)),
+              Text('当前：${store.timerMinutes} 分钟',
+                  style: const TextStyle(color: TancyColors.textDim)),
               CheckboxListTile(
                 value: store.stopAfterCurrentSong,
                 contentPadding: EdgeInsets.zero,
@@ -876,33 +1356,43 @@ class _TancyHomePageState extends State<TancyHomePage> {
         ),
         if (store.timerEnabled && store.sleepTimerSeconds > 0) ...[
           const SizedBox(height: 8),
-          Text('剩余 ${store.sleepTimerSeconds}s', style: const TextStyle(color: TancyColors.primary)),
+          Text('剩余 ${store.sleepTimerSeconds}s',
+              style: const TextStyle(color: TancyColors.primary)),
         ],
-        if (store.stopAfterCurrentSong) const Text('已启用：播放完整歌曲后停止', style: TextStyle(color: TancyColors.primary)),
+        if (store.stopAfterCurrentSong)
+          const Text('已启用：播放完整歌曲后停止',
+              style: TextStyle(color: TancyColors.primary)),
         const SizedBox(height: 16),
         SwitchListTile(
           value: store.showNotificationControl,
           onChanged: store.setNotificationControl,
           title: const Text('Show Notification Control'),
-          subtitle: const Text('Keep playback actions in status bar', style: TextStyle(color: TancyColors.textDim)),
+          subtitle: const Text('Keep playback actions in status bar',
+              style: TextStyle(color: TancyColors.textDim)),
         ),
         ListTile(
           onTap: store.scanSongs,
-          leading: const Icon(Icons.refresh_rounded, color: TancyColors.primary),
+          leading:
+              const Icon(Icons.refresh_rounded, color: TancyColors.primary),
           title: const Text('Rescan Storage'),
-          subtitle: const Text('Force indexer to look for new audio files', style: TextStyle(color: TancyColors.textDim)),
+          subtitle: const Text('Force indexer to look for new audio files',
+              style: TextStyle(color: TancyColors.textDim)),
         ),
         const SizedBox(height: 4),
         ListTile(
           title: const Text('最短音频时长筛选'),
-          subtitle: Text('过滤短于 ${store.minDurationSeconds}s 的音频（铃声/系统音）', style: const TextStyle(color: TancyColors.textDim)),
+          subtitle: Text('过滤短于 ${store.minDurationSeconds}s 的音频（铃声/系统音）',
+              style: const TextStyle(color: TancyColors.textDim)),
         ),
         Slider(
-          value: _minDurationPreview >= 0 ? _minDurationPreview : store.minDurationSeconds.toDouble(),
+          value: _minDurationPreview >= 0
+              ? _minDurationPreview
+              : store.minDurationSeconds.toDouble(),
           min: 0,
           max: 300,
           divisions: 60,
-          label: '${(_minDurationPreview >= 0 ? _minDurationPreview : store.minDurationSeconds.toDouble()).round()}s',
+          label:
+              '${(_minDurationPreview >= 0 ? _minDurationPreview : store.minDurationSeconds.toDouble()).round()}s',
           onChanged: (v) => setState(() => _minDurationPreview = v),
           onChangeEnd: (v) async {
             await store.setMinDurationSeconds(v);
@@ -912,9 +1402,21 @@ class _TancyHomePageState extends State<TancyHomePage> {
         ),
         ListTile(
           onTap: _runDuplicateScan,
-          leading: const Icon(Icons.fingerprint_rounded, color: TancyColors.primary),
+          leading:
+              const Icon(Icons.fingerprint_rounded, color: TancyColors.primary),
           title: const Text('Duplicate Detection (SHA-256)'),
-          subtitle: const Text('Find repeated audio files by hash', style: TextStyle(color: TancyColors.textDim)),
+          subtitle: const Text(
+              'Fast scan with size grouping, sample fingerprint and cached hash',
+              style: TextStyle(color: TancyColors.textDim)),
+        ),
+        const SizedBox(height: 4),
+        ListTile(
+          onTap: _openDefaultPlayerSettings,
+          leading:
+              const Icon(Icons.audio_file_rounded, color: TancyColors.primary),
+          title: const Text('注册到系统音频打开方式'),
+          subtitle: const Text('打开 Android 默认应用设置，选择 tancyPlayer 作为音频打开方式',
+              style: TextStyle(color: TancyColors.textDim)),
         ),
       ],
     );
@@ -943,29 +1445,47 @@ class _TancyHomePageState extends State<TancyHomePage> {
               width: 54,
               height: 54,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [Color(0xFF192A3D), Color(0xFF0E5B66)]),
+                gradient: const LinearGradient(
+                    colors: [Color(0xFF192A3D), Color(0xFF0E5B66)]),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(Icons.music_note_rounded, color: Colors.white70),
+              child:
+                  const Icon(Icons.music_note_rounded, color: Colors.white70),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: GoogleFonts.spaceGrotesk(fontSize: 17, fontWeight: FontWeight.w700)),
-                  Text(s.artist?.isNotEmpty == true ? s.artist! : 'Unknown Artist', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: TancyColors.textDim)),
+                  Text(s.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.spaceGrotesk(
+                          fontSize: 17, fontWeight: FontWeight.w700)),
+                  Text(
+                      s.artist?.isNotEmpty == true
+                          ? s.artist!
+                          : 'Unknown Artist',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: TancyColors.textDim)),
                 ],
               ),
             ),
-            Text(_fmt(Duration(milliseconds: s.duration ?? 0)), style: const TextStyle(color: TancyColors.textDim)),
+            Text(_fmt(Duration(milliseconds: s.duration ?? 0)),
+                style: const TextStyle(color: TancyColors.textDim)),
             IconButton(
               onPressed: () => store.toggleFavorite(s.id),
-              icon: Icon(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: liked ? TancyColors.secondary : TancyColors.textDim),
+              icon: Icon(
+                  liked
+                      ? Icons.favorite_rounded
+                      : Icons.favorite_border_rounded,
+                  color: liked ? TancyColors.secondary : TancyColors.textDim),
             ),
             IconButton(
-              onPressed: () => _addToPlaylistSheet(s.id),
-              icon: const Icon(Icons.playlist_add_rounded, color: TancyColors.primary),
+              onPressed: () => _showSongMenu(s),
+              icon: const Icon(Icons.more_horiz_rounded,
+                  color: TancyColors.primary),
             ),
           ],
         ),
@@ -984,7 +1504,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 20),
       decoration: BoxDecoration(
         color: TancyColors.surfaceHigh.withValues(alpha: 0.75),
-        borderRadius: const BorderRadius.only(topLeft: Radius.circular(28), topRight: Radius.circular(28)),
+        borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(28), topRight: Radius.circular(28)),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -1005,11 +1526,21 @@ class _TancyHomePageState extends State<TancyHomePage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(items[i].$1, color: active ? const Color(0xFF003840) : TancyColors.textDim, size: 22),
+                  Icon(items[i].$1,
+                      color: active
+                          ? const Color(0xFF003840)
+                          : TancyColors.textDim,
+                      size: 22),
                   const SizedBox(height: 2),
                   Text(
                     items[i].$2,
-                    style: TextStyle(fontSize: 10, letterSpacing: 1.2, color: active ? const Color(0xFF003840) : TancyColors.textDim, fontWeight: FontWeight.w700),
+                    style: TextStyle(
+                        fontSize: 10,
+                        letterSpacing: 1.2,
+                        color: active
+                            ? const Color(0xFF003840)
+                            : TancyColors.textDim,
+                        fontWeight: FontWeight.w700),
                   ),
                 ],
               ),
@@ -1068,7 +1599,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
           decoration: const InputDecoration(hintText: '例如：夜间通勤'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(context), child: const Text('取消')),
           FilledButton(
             onPressed: () async {
               final name = controller.text.trim();
@@ -1105,7 +1637,8 @@ class _TancyHomePageState extends State<TancyHomePage> {
             ...store.playlists.keys.map(
               (name) => ListTile(
                 title: Text(name),
-                trailing: const Icon(Icons.playlist_add_rounded, color: TancyColors.primary),
+                trailing: const Icon(Icons.playlist_add_rounded,
+                    color: TancyColors.primary),
                 onTap: () async {
                   await store.addToPlaylist(name, songId);
                   if (!mounted) return;
@@ -1122,11 +1655,91 @@ class _TancyHomePageState extends State<TancyHomePage> {
     );
   }
 
+  Future<void> _showSongMenu(SongModel song, {String? playlistName}) async {
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: TancyColors.surface,
+      builder: (_) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              title: Text(song.title,
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(song.artist ?? 'Unknown Artist',
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
+            ListTile(
+              leading: const Icon(Icons.queue_music_rounded,
+                  color: TancyColors.primary),
+              title: const Text('下一首播放'),
+              onTap: () async {
+                Navigator.pop(context);
+                await store.queueNext(song.id);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('已加入下一首：${song.title}')),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add_rounded,
+                  color: TancyColors.primary),
+              title: const Text('加入歌单'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _addToPlaylistSheet(song.id);
+              },
+            ),
+            ListTile(
+              leading:
+                  const Icon(Icons.send_rounded, color: TancyColors.primary),
+              title: const Text('发送到'),
+              onTap: () async {
+                Navigator.pop(context);
+                final shared = await _shareSong(song);
+                if (!mounted || shared) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('发送失败，文件可能已不存在')),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.info_outline_rounded,
+                  color: TancyColors.primary),
+              title: const Text('显示更多详情'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _showSongDetails(song);
+              },
+            ),
+            if (playlistName != null)
+              ListTile(
+                leading: const Icon(Icons.remove_circle_outline_rounded,
+                    color: TancyColors.secondary),
+                title: const Text('从当前歌单移除'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await store.removeFromPlaylist(playlistName, song.id);
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('已从歌单移除')),
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _runDuplicateScan() async {
     await store.detectDuplicates();
     if (!mounted) return;
     if (store.duplicateGroups.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('未发现重复音频')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('未发现重复音频')));
       return;
     }
     await showModalBottomSheet<void>(
@@ -1140,9 +1753,12 @@ class _TancyHomePageState extends State<TancyHomePage> {
           child: ListView(
             controller: ctrl,
             children: [
-              Text('Duplicate Songs Detected', style: GoogleFonts.spaceGrotesk(fontSize: 28, fontWeight: FontWeight.w700)),
+              Text('Duplicate Songs Detected',
+                  style: GoogleFonts.spaceGrotesk(
+                      fontSize: 28, fontWeight: FontWeight.w700)),
               const SizedBox(height: 6),
-              const Text('Verification Method: SHA-256 Hash', style: TextStyle(color: TancyColors.textDim)),
+              const Text('Verification Method: SHA-256 Hash',
+                  style: TextStyle(color: TancyColors.textDim)),
               const SizedBox(height: 16),
               for (final g in store.duplicateGroups.take(30))
                 Container(
@@ -1155,16 +1771,22 @@ class _TancyHomePageState extends State<TancyHomePage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Hash: ${g.hash.substring(0, 10)}...', style: const TextStyle(color: TancyColors.textDim, fontSize: 12)),
+                      Text('Hash: ${g.hash.substring(0, 10)}...',
+                          style: const TextStyle(
+                              color: TancyColors.textDim, fontSize: 12)),
                       const SizedBox(height: 8),
                       ...g.songs.map(
                         (s) => Padding(
                           padding: const EdgeInsets.only(bottom: 6),
                           child: Row(
                             children: [
-                              const Icon(Icons.music_note_rounded, size: 14, color: TancyColors.primary),
+                              const Icon(Icons.music_note_rounded,
+                                  size: 14, color: TancyColors.primary),
                               const SizedBox(width: 8),
-                              Expanded(child: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                              Expanded(
+                                  child: Text(s.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis)),
                             ],
                           ),
                         ),
@@ -1182,7 +1804,12 @@ class _TancyHomePageState extends State<TancyHomePage> {
   Future<void> _openPlaylist(String name) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => PlaylistDetailPage(store: store, name: name, onSongLongPress: _showSongDetails),
+        builder: (_) => PlaylistDetailPage(
+          store: store,
+          name: name,
+          onSongLongPress: _showSongDetails,
+          onSongMenu: _showSongMenu,
+        ),
       ),
     );
     if (mounted) setState(() {});
@@ -1196,10 +1823,13 @@ class _TancyHomePageState extends State<TancyHomePage> {
         title: const Text('删除歌单'),
         content: Text('确认删除歌单「$name」吗？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消')),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(backgroundColor: TancyColors.secondary),
+            style:
+                FilledButton.styleFrom(backgroundColor: TancyColors.secondary),
             child: const Text('删除'),
           ),
         ],
@@ -1215,60 +1845,42 @@ class _TancyHomePageState extends State<TancyHomePage> {
   }
 
   Future<void> _showSongDetails(SongModel song) async {
-    final details = await store.buildSongDetails(song);
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: TancyColors.surface,
-        title: const Text('音频详情'),
-        content: SizedBox(
-          width: 420,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: details.entries
-                  .map(
-                    (e) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text('${e.key}：${e.value}'),
-                    ),
-                  )
-                  .toList(),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              final path = details['路径'] ?? '';
-              if (path.isNotEmpty) {
-                await Clipboard.setData(ClipboardData(text: path));
-              }
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('已复制文件路径')),
-              );
-            },
-            child: const Text('复制路径'),
-          ),
-          TextButton(
-            onPressed: () async {
-              final hash = details['Hash'] ?? '';
-              if (hash.isNotEmpty && hash != 'N/A') {
-                await Clipboard.setData(ClipboardData(text: hash));
-              }
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('已复制 Hash')),
-              );
-            },
-            child: const Text('复制Hash'),
-          ),
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
-        ],
+    final deleted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => SongDetailPage(store: store, song: song),
       ),
     );
+    if (!mounted || deleted != true) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已删除：${song.title}')),
+    );
+  }
+
+  Future<void> _openDefaultPlayerSettings() async {
+    try {
+      await _platform.invokeMethod<void>('openDefaultAppsSettings');
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('无法打开系统设置')),
+      );
+    }
+  }
+
+  Future<bool> _shareSong(SongModel song) async {
+    final path = song.data;
+    if (path.isEmpty) return false;
+    final file = File(path);
+    if (!await file.exists()) return false;
+    try {
+      await _platform.invokeMethod<void>('shareAudio', {
+        'path': path,
+        'title': song.title,
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   String _fmt(Duration d) {
@@ -1281,12 +1893,15 @@ class PlaylistDetailPage extends StatefulWidget {
   final PlayerStore store;
   final String name;
   final Future<void> Function(SongModel song) onSongLongPress;
+  final Future<void> Function(SongModel song, {String? playlistName})
+      onSongMenu;
 
   const PlaylistDetailPage({
     super.key,
     required this.store,
     required this.name,
     required this.onSongLongPress,
+    required this.onSongMenu,
   });
 
   @override
@@ -1328,7 +1943,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   title: const Text('删除歌单'),
                   content: Text('确认删除歌单「${widget.name}」吗？'),
                   actions: [
-                    TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                    TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('取消')),
                     FilledButton(
                       onPressed: () async {
                         await widget.store.deletePlaylist(widget.name);
@@ -1336,19 +1953,22 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                         Navigator.pop(context); // close confirm
                         Navigator.pop(context); // close detail page
                       },
-                      style: FilledButton.styleFrom(backgroundColor: TancyColors.secondary),
+                      style: FilledButton.styleFrom(
+                          backgroundColor: TancyColors.secondary),
                       child: const Text('删除'),
                     ),
                   ],
                 ),
               );
             },
-            icon: const Icon(Icons.delete_rounded, color: TancyColors.secondary),
+            icon:
+                const Icon(Icons.delete_rounded, color: TancyColors.secondary),
           ),
         ],
       ),
       body: songs.isEmpty
-          ? const Center(child: Text('歌单为空', style: TextStyle(color: TancyColors.textDim)))
+          ? const Center(
+              child: Text('歌单为空', style: TextStyle(color: TancyColors.textDim)))
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
@@ -1361,7 +1981,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   ),
                   child: Row(
                     children: [
-                      Text('共 ${songs.length} 首', style: const TextStyle(color: TancyColors.textDim)),
+                      Text('共 ${songs.length} 首',
+                          style: const TextStyle(color: TancyColors.textDim)),
                       const Spacer(),
                       FilledButton.tonalIcon(
                         onPressed: () async {
@@ -1377,31 +1998,241 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 ...songs.map((s) => Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: ListTile(
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
                         tileColor: TancyColors.surfaceLow,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                        title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 4),
+                        title: Text(s.title,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
                         subtitle: Text(
-                          s.artist?.isNotEmpty == true ? s.artist! : 'Unknown Artist',
+                          s.artist?.isNotEmpty == true
+                              ? s.artist!
+                              : 'Unknown Artist',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                         onTap: () => widget.store.playById(s.id),
                         onLongPress: () => widget.onSongLongPress(s),
                         trailing: IconButton(
-                          onPressed: () async {
-                            await widget.store.removeFromPlaylist(widget.name, s.id);
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('已从歌单移除')),
-                            );
-                          },
-                          icon: const Icon(Icons.remove_circle_outline_rounded, color: TancyColors.secondary),
+                          onPressed: () =>
+                              widget.onSongMenu(s, playlistName: widget.name),
+                          icon: const Icon(Icons.more_horiz_rounded,
+                              color: TancyColors.primary),
                         ),
                       ),
                     )),
               ],
             ),
+    );
+  }
+}
+
+class SongDetailPage extends StatefulWidget {
+  final PlayerStore store;
+  final SongModel song;
+
+  const SongDetailPage({
+    super.key,
+    required this.store,
+    required this.song,
+  });
+
+  @override
+  State<SongDetailPage> createState() => _SongDetailPageState();
+}
+
+class _SongDetailPageState extends State<SongDetailPage> {
+  SongDetails? _details;
+  bool _loading = true;
+  bool _deleting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final details = await widget.store.buildSongDetails(widget.song);
+    if (!mounted) return;
+    setState(() {
+      _details = details;
+      _loading = false;
+    });
+  }
+
+  Future<void> _copy(String text, String message) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> _confirmDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: TancyColors.surface,
+        title: const Text('删除音频文件'),
+        content: Text('确认删除「${widget.song.title}」吗？此操作会同时从库和歌单中移除。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style:
+                FilledButton.styleFrom(backgroundColor: TancyColors.secondary),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _deleting = true);
+    final deleted = await widget.store.deleteSong(widget.song);
+    if (!mounted) return;
+    setState(() => _deleting = false);
+    if (deleted) {
+      Navigator.pop(context, true);
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('删除失败，系统可能未授予文件删除权限')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final details = _details;
+    return Scaffold(
+      backgroundColor: TancyColors.background,
+      appBar: AppBar(
+        backgroundColor: TancyColors.background,
+        title: const Text('音频详情'),
+        leading: IconButton(
+          onPressed: () => Navigator.pop(context),
+          icon: const Icon(Icons.arrow_back_rounded),
+        ),
+        actions: [
+          IconButton(
+            onPressed: _deleting ? null : _confirmDelete,
+            icon:
+                const Icon(Icons.delete_rounded, color: TancyColors.secondary),
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: TancyColors.surfaceLow,
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 72,
+                        height: 72,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(18),
+                          gradient: const LinearGradient(
+                              colors: [Color(0xFF192A3D), Color(0xFF0E5B66)]),
+                        ),
+                        child: const Icon(Icons.library_music_rounded,
+                            color: Colors.white, size: 34),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(widget.song.title,
+                                style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 24, fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 4),
+                            Text(widget.song.artist ?? 'Unknown Artist',
+                                style: const TextStyle(
+                                    color: TancyColors.textDim)),
+                            const SizedBox(height: 4),
+                            Text(
+                                '${details?.quality ?? 'Unknown'}  ${details?.estimatedBitrate ?? 'N/A'}',
+                                style: const TextStyle(
+                                    color: TancyColors.primary)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _detailCard('文件名', details?.fileName ?? 'N/A'),
+                _detailCard(
+                    '格式',
+                    (details?.format.isNotEmpty ?? false)
+                        ? details!.format
+                        : 'Unknown'),
+                _detailCard('质量', details?.quality ?? 'Unknown'),
+                _detailCard('估算码率', details?.estimatedBitrate ?? 'N/A'),
+                _detailCard('时长',
+                    '${((widget.song.duration ?? 0) / 1000).toStringAsFixed(1)} 秒'),
+                _detailCard(
+                    '大小',
+                    details == null || !details.exists
+                        ? 'N/A'
+                        : '${(details.size / 1024 / 1024).toStringAsFixed(2)} MB'),
+                _detailCard('路径', details?.path ?? 'N/A'),
+                _detailCard(
+                    '修改时间', details?.modifiedAt?.toLocal().toString() ?? 'N/A'),
+                _detailCard('SHA-256', details?.hash ?? 'N/A'),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: details == null
+                          ? null
+                          : () => _copy(details.path, '已复制文件路径'),
+                      icon: const Icon(Icons.content_copy_rounded),
+                      label: const Text('复制路径'),
+                    ),
+                    FilledButton.tonalIcon(
+                      onPressed: details == null || details.hash == 'N/A'
+                          ? null
+                          : () => _copy(details.hash, '已复制 Hash'),
+                      icon: const Icon(Icons.fingerprint_rounded),
+                      label: const Text('复制 Hash'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _detailCard(String label, String value) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: TancyColors.surfaceLow,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: TancyColors.textDim)),
+          const SizedBox(height: 6),
+          SelectableText(value),
+        ],
+      ),
     );
   }
 }
@@ -1436,17 +2267,22 @@ class _AutoMarqueeTextState extends State<AutoMarqueeText> {
         final maxWidth = constraints.maxWidth;
         final overflow = (textWidth - maxWidth).clamp(0.0, 10000.0);
         if (overflow <= 0) {
-          return Text(widget.text, maxLines: 1, overflow: TextOverflow.ellipsis, style: widget.style);
+          return Text(widget.text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: widget.style);
         }
         return ClipRect(
           child: TweenAnimationBuilder<double>(
-            tween: Tween<double>(begin: _forward ? 0 : -overflow, end: _forward ? -overflow : 0),
+            tween: Tween<double>(
+                begin: _forward ? 0 : -overflow, end: _forward ? -overflow : 0),
             duration: const Duration(seconds: 8),
             onEnd: () {
               if (!mounted) return;
               setState(() => _forward = !_forward);
             },
-            builder: (_, value, child) => Transform.translate(offset: Offset(value, 0), child: child),
+            builder: (_, value, child) =>
+                Transform.translate(offset: Offset(value, 0), child: child),
             child: Text(widget.text, maxLines: 1, style: widget.style),
           ),
         );
@@ -1510,7 +2346,8 @@ class SongSearchDelegate extends SearchDelegate<SongModel?> {
   Widget buildResults(BuildContext context) {
     final data = _filtered();
     if (data.isEmpty) {
-      return const Center(child: Text('没有匹配结果', style: TextStyle(color: TancyColors.textDim)));
+      return const Center(
+          child: Text('没有匹配结果', style: TextStyle(color: TancyColors.textDim)));
     }
     return ListView.builder(
       itemCount: data.length,
@@ -1518,7 +2355,8 @@ class SongSearchDelegate extends SearchDelegate<SongModel?> {
         final s = data[i];
         return ListTile(
           title: Text(s.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(s.artist ?? 'Unknown Artist', maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(s.artist ?? 'Unknown Artist',
+              maxLines: 1, overflow: TextOverflow.ellipsis),
           onTap: () => close(context, s),
           onLongPress: () => onSongLongPress(s),
         );
@@ -1542,7 +2380,10 @@ class _AmbientGlow extends StatelessWidget {
         height: 260,
         decoration: const BoxDecoration(
           shape: BoxShape.circle,
-          boxShadow: [BoxShadow(color: Color(0x3381ECFF), blurRadius: 160, spreadRadius: 18)],
+          boxShadow: [
+            BoxShadow(
+                color: Color(0x3381ECFF), blurRadius: 160, spreadRadius: 18)
+          ],
         ),
       ),
     );
