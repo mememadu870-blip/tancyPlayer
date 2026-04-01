@@ -7,3 +7,11 @@
 /.externalNativeBuild
 /.cxx
 **/build
+
+# Android build outputs
+*.apk
+*.aab
+*.ap_
+*.idsig
+output-metadata.json
+**/outputs/
