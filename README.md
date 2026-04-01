@@ -1,72 +1,77 @@
-# Tancy Player (Android)
+# Tancy Player: The Obsidian Conductor
 
-按照 `gstack` 的工程节奏构建：`Think -> Plan -> Build -> Review -> Test -> Ship -> Reflect`。
+> **Creative North Star:** "The Obsidian Conductor" —— 超越传统的工具感，打造沉浸式的、社论级的移动音乐环境。
 
-## 已实现能力
+Tancy Player 是一款专为追求极致视听体验而设计的 Android 本地音乐播放器。它拒绝传统 Android 界面的方正束缚，采用流体、高对比度的审美，将专辑艺术与播放控制视为数字艺术品。
 
-- 本地音乐自动扫描（`MediaStore`）
-- 播放控制：播放/暂停、上一首、下一首
-- 定时停止（15 分钟、30 分钟、取消）
-- 歌单创建、添加歌曲到歌单
-- 收藏/取消收藏
-- 重复音频提示（按 `SHA-256` 计算 hash 后分组）
-- 重复模式：不重复、单曲循环、列表循环
-- 通知栏控制（Media3 播放通知）
-- 锁屏媒体会话控制（MediaSession）
-- 前台播放服务保活（Foreground Service）
-- 播放进度展示与拖动跳转（Seek）
-- 耳机/蓝牙媒体按键入口（`MEDIA_BUTTON`）
+---
 
-## Flutter 高颜值 UI 版
+## 🎨 设计哲学：The Sonic Canvas (声色画布)
 
-- Flutter 代码目录：`flutter_player/`
-- 入口文件：`flutter_player/lib/main.dart`
-- 使用了更现代的视觉风格（渐变、玻璃态卡片、播放底栏、队列卡片）
-- 功能已接入：
-  - 自动扫描本地音乐
-  - 播放/暂停、上一首、下一首、进度拖动
-  - 收藏、创建歌单、加歌到歌单
-  - 定时停止
-  - 重复模式（不循环/单曲/列表）
-  - Hash 重复音频检测提示
+本项目遵循 **"The Sonic Canvas"** 设计系统，核心原则包括：
+- **Intentional Asymmetry (有意的不对称)**：打破容器边界，创造动感。
+- **Tonal Depth (色调深度)**：以黑曜石深色 (`#0e0e0e`) 为基调，配合电光蓝 (`#81ecff`) 冲击视觉。
+- **Glassmorphism (玻璃拟态)**：悬浮控件采用 60% 透明度结合 20px-30px 的背景模糊，营造轻盈的物理层级感。
+- **Editorial Typography (社论级排版)**：Space Grotesk 赋予标题未来感，Inter 确保元数据的高可读性。
 
-## GitHub Actions 自动构建 APK
+---
 
-- 工作流文件：`.github/workflows/flutter-android-build.yml`
-- 触发方式：
-  - push `flutter_player/**` 自动触发
-  - 在 GitHub Actions 页面手动触发 `workflow_dispatch`
-- 产物：
-  - Artifact 名称：`tancy-player-flutter-release-apk`
-  - 文件：`app-release.apk`
+## 🚀 核心功能
 
-## 技术栈
+### 已实现能力
+- **本地音乐智能扫描**：自动检索媒体库，支持按时长过滤（如过滤 <30s 的铃声）。
+- **专业级播放控制**：Media3 ExoPlayer 驱动，支持通知栏、锁屏媒体会话及耳机/蓝牙按键控制。
+- **重复音频精准检测**：基于文件 Hash 计算的排重算法，识别内容相同但文件名不同的文件。
+- **多维播放模式**：顺序播放、随机播放、单曲循环、列表循环。
+- **歌单与收藏**：灵活创建歌单、添加歌曲到队列或指定歌单，收藏心动旋律。
+- **前台保活服务**：确保后台稳定播放，不受系统主动杀后台影响。
 
-- Kotlin + Jetpack Compose
-- Media3 ExoPlayer
-- Coroutine + StateFlow
-- 本地 JSON 持久化（轻量版，便于快速迭代）
+### 正在进行的改进
+- **定时能力重构**：从固定档位升级为 0-180 分钟无级调节，支持“播放完当前歌曲后停止”。
+- **增强型交互菜单**：每首歌曲提供“下一首播放”、“发送到”、“详情展示（质量/路径/大小）”等深度操作。
+- **系统级集成**：注册为 Android 系统默认音乐播放器，支持从外部文件管理器直接打开播放。
+- **性能优化**：优化 Hash 计算速度，提升大规模曲库扫描体验。
 
-## 目录结构
+---
 
-- `app/src/main/java/com/tancy/player/data`: 扫描、数据模型、持久化、Hash
-- `app/src/main/java/com/tancy/player/player`: 播放器封装、定时器
-- `app/src/main/java/com/tancy/player/ui`: UI 状态和 ViewModel
-- `app/src/main/java/com/tancy/player/MainActivity.kt`: 页面和交互入口
+## 🗺️ 产品路线图 (Roadmap)
 
-## 运行方式
+1.  **阶段 1：定时器重塑** —— 引入 Slider 滑动设置、启用开关及倒计时同步显示。
+2.  **阶段 2：库筛选与搜索** —— 完善时长过滤设置与多维度（标题/歌手/专辑）全局搜索。
+3.  **阶段 3：沉浸式 UI** —— 移除冗余播放条，优化底部导航，释放视觉空间。
+4.  **阶段 4：交互增强** —— 引入文本滚动显示（Marquee），长按获取全维度歌曲元数据。
+5.  **阶段 5：歌单功能闭环** —— 完善歌单详情管理、歌曲移除及二次确认逻辑。
+6.  **阶段 6：全流程回归** —— 修复构建警告，触发 GitHub Actions 自动输出发布版 APK。
 
-1. 使用 Android Studio 打开 `E:\case\tancyPlayer`
-2. 等待 Gradle Sync 完成
-3. 连接真机或模拟器（Android 8+）
-4. 首次启动授予音频读取权限
-5. 点击“扫描音乐”开始建立本地库
+---
 
-## 测试建议
+## 🛠️ 技术栈
 
-- 扫描后歌曲列表数量是否正确
-- 上一首/下一首是否按队列切换
-- 定时停止到点后是否暂停
-- 歌单创建后能否添加歌曲
-- 收藏状态重启后是否保留
-- Hash 查重是否能识别同内容不同文件名音频
+- **Core**: Kotlin + Jetpack Compose
+- **Engine**: Media3 ExoPlayer
+- **Reactive**: Coroutines + StateFlow
+- **Storage**: 轻量化 JSON 持久化 (SharedPreferences 用于配置保存)
+- **Design**: Space Grotesk (Headers) / Inter (Body)
+- **CI/CD**: GitHub Actions (`.github/workflows/flutter-android-build.yml`)
+
+---
+
+## 📂 目录结构
+
+- `app/src/main/java/com/tancy/player/data`: 核心逻辑（扫描、模型、持久化、Hash 算法）。
+- `app/src/main/java/com/tancy/player/player`: 播放核心（ExoPlayer 封装、定时器管理）。
+- `app/src/main/java/com/tancy/player/ui`: UI 表现层（Compose 页面、ViewModel 状态）。
+- `flutter_player/`: 高颜值 Flutter UI 实验版目录。
+
+---
+
+## 🚦 运行与测试
+
+1. 使用 Android Studio 打开项目根目录。
+2. 首次运行请确保授予 `READ_EXTERNAL_STORAGE` 或 `READ_MEDIA_AUDIO` 权限。
+3. 点击“扫描音乐”建立本地索引。
+4. **测试建议**：关注 Hash 查重准确率、定时停止精度以及歌单持久化状态。
+
+---
+
+*Update: 2026-04-01*
