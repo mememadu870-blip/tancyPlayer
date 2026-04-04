@@ -354,14 +354,29 @@ class PlayerStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  static const _kFavoritesPlaylistName = '喜爱';
+
   Future<void> toggleFavorite(int songId) async {
-    if (favorites.contains(songId)) {
+    final wasFavorite = favorites.contains(songId);
+    if (wasFavorite) {
       favorites.remove(songId);
+      // 从喜爱歌单中移除
+      final favList = playlists[_kFavoritesPlaylistName];
+      if (favList != null) {
+        favList.remove(songId);
+      }
     } else {
       favorites.add(songId);
+      // 加入喜爱歌单（如不存在则自动创建）
+      playlists.putIfAbsent(_kFavoritesPlaylistName, () => <int>[]);
+      final favList = playlists[_kFavoritesPlaylistName]!;
+      if (!favList.contains(songId)) {
+        favList.add(songId);
+      }
     }
     await _prefs?.setStringList(
         _kFavorites, favorites.map((e) => e.toString()).toList());
+    await _persistPlaylists();
     notifyListeners();
   }
 
@@ -615,7 +630,7 @@ class PlayerStore extends ChangeNotifier {
         timer.cancel();
         sleepTimerSeconds = 0;
         timerEnabled = false;
-        await _prefs?.setBool(_kTimerEnabled, false);
+        // 不保存 timerEnabled = false，以便下次打开APP时自动恢复定时设置
         await _player.pause();
       }
       notifyListeners();
