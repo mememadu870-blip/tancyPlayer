@@ -80,13 +80,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun play(trackId: Long) {
+    fun play(trackId: Long, fromFavorites: Boolean = false) {
+        if (fromFavorites) {
+            val favoriteTracks = cache.tracks.filter { it.id in cache.favoriteTrackIds }
+            if (favoriteTracks.isNotEmpty()) {
+                playerController.submitQueue(favoriteTracks)
+            }
+        }
         playerController.playByTrackId(trackId)
         PlaybackForegroundService.start(getApplication())
         _uiState.update {
             it.copy(
                 nowPlayingTrackId = trackId,
                 isPlaying = playerController.isPlaying()
+            )
+        }
+    }
+
+    fun playFavorites() {
+        val favoriteTracks = cache.tracks.filter { it.id in cache.favoriteTrackIds }
+        if (favoriteTracks.isEmpty()) return
+        playerController.submitQueue(favoriteTracks)
+        playerController.playByTrackId(favoriteTracks.first().id)
+        PlaybackForegroundService.start(getApplication())
+        _uiState.update {
+            it.copy(
+                nowPlayingTrackId = favoriteTracks.first().id,
+                isPlaying = true
+            )
+        }
+    }
+
+    fun playPlaylist(playlistId: Long) {
+        val playlist = cache.playlists.find { it.id == playlistId } ?: return
+        val playlistTracks = cache.tracks.filter { it.id in playlist.trackIds }
+        if (playlistTracks.isEmpty()) return
+        playerController.submitQueue(playlistTracks)
+        playerController.playByTrackId(playlistTracks.first().id)
+        PlaybackForegroundService.start(getApplication())
+        _uiState.update {
+            it.copy(
+                nowPlayingTrackId = playlistTracks.first().id,
+                isPlaying = true
             )
         }
     }

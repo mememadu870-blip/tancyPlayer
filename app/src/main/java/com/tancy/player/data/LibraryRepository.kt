@@ -57,4 +57,24 @@ class LibraryRepository(private val context: Context) {
         save(updated)
         return updated
     }
+
+    suspend fun renamePlaylist(
+        current: LibraryCache,
+        playlistId: Long,
+        newName: String
+    ): LibraryCache {
+        val updatedPlaylists = current.playlists.map { playlist ->
+            if (playlist.id != playlistId) return@map playlist
+            playlist.copy(name = newName.trim())
+        }
+        val updated = current.copy(playlists = updatedPlaylists)
+        save(updated)
+        return updated
+    }
+
+    suspend fun deletePlaylist(current: LibraryCache, playlistId: Long): LibraryCache {
+        val updated = current.copy(playlists = current.playlists.filter { it.id != playlistId })
+        save(updated)
+        return updated
+    }
 }

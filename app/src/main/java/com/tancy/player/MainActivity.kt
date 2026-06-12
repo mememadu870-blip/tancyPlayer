@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     uiState = uiState,
                     onScan = { permissionLauncher.launch(permissions) },
-                    onPlay = viewModel::play,
+                    onPlay = { trackId, fromFavorites -> viewModel.play(trackId, fromFavorites) },
                     onTogglePlayPause = viewModel::togglePlayPause,
                     onPrevious = viewModel::previous,
                     onNext = viewModel::next,
@@ -91,7 +91,9 @@ class MainActivity : ComponentActivity() {
                     onSetRepeat = viewModel::setRepeatMode,
                     onSeekTo = viewModel::seekTo,
                     onDetectDuplicate = viewModel::detectDuplicatesByHash,
-                    onDismissDuplicates = viewModel::clearDuplicateResult
+                    onDismissDuplicates = viewModel::clearDuplicateResult,
+                    onPlayFavorites = viewModel::playFavorites,
+                    onPlayPlaylist = viewModel::playPlaylist
                 )
             }
         }
@@ -102,7 +104,7 @@ class MainActivity : ComponentActivity() {
 private fun MainScreen(
     uiState: com.tancy.player.ui.MainUiState,
     onScan: () -> Unit,
-    onPlay: (Long) -> Unit,
+    onPlay: (Long, Boolean) -> Unit,
     onTogglePlayPause: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
@@ -114,10 +116,19 @@ private fun MainScreen(
     onSetRepeat: (RepeatMode) -> Unit,
     onSeekTo: (Long) -> Unit,
     onDetectDuplicate: () -> Unit,
-    onDismissDuplicates: () -> Unit
+    onDismissDuplicates: () -> Unit,
+    onPlayFavorites: () -> Unit,
+    onPlayPlaylist: (Long) -> Unit
 ) {
     var playlistName by rememberSaveable { mutableStateOf("") }
     var playlistMenuExpanded by remember { mutableStateOf(false) }
+    var showFavoritesOnly by remember { mutableStateOf(false) }
+
+    val displayedTracks = if (showFavoritesOnly) {
+        uiState.tracks.filter { it.id in uiState.favoriteTrackIds }
+    } else {
+        uiState.tracks
+    }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
         Column(
@@ -141,6 +152,15 @@ private fun MainScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(onClick = onScan) { Text("扫描音乐") }
                 Button(onClick = onDetectDuplicate) { Text("Hash查重") }
+                Button(onClick = { showFavoritesOnly = !showFavoritesOnly }) {
+                    Text(if (showFavoritesOnly) "显示全部" else "仅收藏")
+                }
+            }
+
+            if (showFavoritesOnly) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(onClick = onPlayFavorites) { Text("播放收藏列表") }
+                }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -200,13 +220,13 @@ private fun MainScreen(
             }
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(uiState.tracks, key = { it.id }) { track ->
+                items(displayedTracks, key = { it.id }) { track ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(track.title, style = MaterialTheme.typography.titleMedium)
                             Text(track.artist, style = MaterialTheme.typography.bodySmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Button(onClick = { onPlay(track.id) }) { Text("播放") }
+                                Button(onClick = { onPlay(track.id, showFavoritesOnly) }) { Text("播放") }
                                 Button(onClick = { onToggleFavorite(track.id) }) {
                                     Text(if (track.id in uiState.favoriteTrackIds) "取消收藏" else "收藏")
                                 }

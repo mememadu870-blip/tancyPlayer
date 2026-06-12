@@ -24,3 +24,12 @@ show a pop view to let user check music
 
 you no need to build on my local compuer,use  push to github with ssh and trigger actions to build apk.
 my github repository: git@github.com:mememadu870-blip/tancyPlayer.git
+
+
+
+# 播放器功能改进
+1. 设置中启用定时应该自动加入记忆，下次打开也是按之前设置的定时时间自动停止播放。 同样的播放完整歌曲后停止也要自动记忆。
+2. 打开APP时不要自动扫描重复音乐，而应该点击时才触发。
+3. 点喜爱时，应该自动加入playLists中的喜爱歌单，如不存在应自动创建，如果取消了喜爱，则要从喜爱歌单中对应移除。
+
+做完你不要在本地编译，直接帮我push到github，检测和修复直到成功构建apk,再通知我。

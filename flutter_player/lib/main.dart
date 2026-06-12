@@ -311,15 +311,56 @@ class PlayerStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> playById(int songId) async {
+  Future<void> playById(int songId, {String? fromPlaylist}) async {
     final idx = songs.indexWhere((s) => s.id == songId);
     if (idx < 0) return;
+    
+    // 如果是从歌单播放，先切换队列到该歌单
+    if (fromPlaylist != null) {
+      final songs = playlistSongs(fromPlaylist);
+      if (songs.isNotEmpty) {
+        await _resetAudioSourcesWithCustom(songs, songId);
+        return;
+      }
+    }
+    
     _manualIndexChange = true;
     await _player.seek(Duration.zero, index: idx);
     await _player.play();
     currentSongId = songId;
     _externalTitle = null;
     _externalSubtitle = null;
+    notifyListeners();
+  }
+
+  Future<void> _resetAudioSourcesWithCustom(List<SongModel> customSongs, int? keepSongId) async {
+    final sources = customSongs
+        .map((s) => AudioSource.uri(
+            Uri.parse('content://media/external/audio/media/${s.id}')))
+        .toList(growable: false);
+    if (sources.isEmpty) {
+      await _player.stop();
+      currentSongId = null;
+      _externalTitle = null;
+      _externalSubtitle = null;
+      return;
+    }
+    var initialIndex = 0;
+    if (keepSongId != null) {
+      final matchedIndex = customSongs.indexWhere((s) => s.id == keepSongId);
+      if (matchedIndex >= 0) {
+        initialIndex = matchedIndex;
+      }
+    }
+    await _player.setAudioSources(
+      sources,
+      initialIndex: initialIndex,
+      initialPosition: Duration.zero,
+    );
+    currentSongId = customSongs[initialIndex].id;
+    _externalTitle = null;
+    _externalSubtitle = null;
+    await _player.play();
     notifyListeners();
   }
 
@@ -416,6 +457,17 @@ class PlayerStore extends ChangeNotifier {
 
   Future<void> deletePlaylist(String name) async {
     playlists.remove(name);
+    await _persistPlaylists();
+    notifyListeners();
+  }
+
+  Future<void> renamePlaylist(String oldName, String newName) async {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty || trimmed == oldName) return;
+    if (playlists.containsKey(trimmed)) return; // 新名称已存在
+    final songs = playlists.remove(oldName);
+    if (songs == null) return;
+    playlists[trimmed] = songs;
     await _persistPlaylists();
     notifyListeners();
   }
@@ -1392,24 +1444,31 @@ class _TancyHomePageState extends State<TancyHomePage> {
             gradient: const LinearGradient(
                 colors: [Color(0x45FF734A), Color(0x1000E3FD)]),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Row(children: [
-                Icon(Icons.favorite_rounded, color: TancyColors.secondary),
-                SizedBox(width: 8),
-                Text('Curated for you',
-                    style: TextStyle(color: TancyColors.textDim))
-              ]),
-              const SizedBox(height: 8),
-              Text('Favorites',
-                  style: GoogleFonts.spaceGrotesk(
-                      fontSize: 44,
-                      fontWeight: FontWeight.w700,
-                      fontStyle: FontStyle.italic)),
-              Text('${store.favorites.length} Tracks',
-                  style: const TextStyle(color: TancyColors.textDim)),
-            ],
+          child: InkWell(
+            borderRadius: BorderRadius.circular(28),
+            onTap: () async {
+              HapticFeedback.selectionClick();
+              await _openFavorites();
+            },
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(children: [
+                  Icon(Icons.favorite_rounded, color: TancyColors.secondary),
+                  SizedBox(width: 8),
+                  Text('Curated for you',
+                      style: TextStyle(color: TancyColors.textDim))
+                ]),
+                const SizedBox(height: 8),
+                Text('Favorites',
+                    style: GoogleFonts.spaceGrotesk(
+                        fontSize: 44,
+                        fontWeight: FontWeight.w700,
+                        fontStyle: FontStyle.italic)),
+                Text('${store.favorites.length} Tracks',
+                    style: const TextStyle(color: TancyColors.textDim)),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 22),
@@ -2170,6 +2229,20 @@ class _TancyHomePageState extends State<TancyHomePage> {
     );
   }
 
+  Future<void> _openFavorites() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PlaylistDetailPage(
+          store: store,
+          name: '喜爱',
+          onSongLongPress: _showSongDetails,
+          onSongMenu: _showSongMenu,
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
   Future<void> _openPlaylist(String name) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -2306,6 +2379,37 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         backgroundColor: TancyColors.background,
         title: Text(widget.name),
         actions: [
+          IconButton(
+            onPressed: () async {
+              final controller = TextEditingController(text: widget.name);
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  backgroundColor: TancyColors.surface,
+                  title: const Text('重命名歌单'),
+                  content: TextField(
+                    controller: controller,
+                    decoration: const InputDecoration(hintText: '输入新名称'),
+                  ),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('取消')),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('确定'),
+                    ),
+                  ],
+                ),
+              );
+              if (ok == true && controller.text.trim().isNotEmpty) {
+                await widget.store.renamePlaylist(widget.name, controller.text.trim());
+                if (!context.mounted) return;
+                Navigator.pop(context); // close detail page with old name
+              }
+            },
+            icon: const Icon(Icons.edit_rounded, color: TancyColors.primary),
+          ),
           PopupMenuButton<PlaylistSongSort>(
             initialValue: _sort,
             onSelected: (value) => setState(() => _sort = value),
@@ -2381,7 +2485,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       FilledButton.tonalIcon(
                         onPressed: () async {
                           HapticFeedback.lightImpact();
-                          await widget.store.playById(songs.first.id);
+                          await widget.store.playById(songs.first.id, fromPlaylist: widget.name);
                         },
                         icon: const Icon(Icons.play_arrow_rounded),
                         label: const Text('播放全部'),
@@ -2406,7 +2510,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        onTap: () => widget.store.playById(s.id),
+                        onTap: () => widget.store.playById(s.id, fromPlaylist: widget.name),
                         onLongPress: () => widget.onSongLongPress(s),
                         trailing: IconButton(
                           onPressed: () =>
